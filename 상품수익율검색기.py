@@ -17,6 +17,8 @@
 """
 
 import glob
+import hashlib
+import hmac
 import os
 import re
 
@@ -53,6 +55,48 @@ USE_COLS = [COL_ORDER, COL_MALL, COL_BRAND, "대카테고리", "카테고리",
 CAT_COLS = [COL_MALL, COL_BRAND, "대카테고리", "카테고리", COL_NOTE, COL_MODEL]
 
 st.set_page_config(page_title="상품 수익율 검색기", page_icon="🔍", layout="wide")
+
+
+# ──────────────────────────────────────────────
+# 비밀번호 잠금
+# ──────────────────────────────────────────────
+# 평문 대신 SHA-256 해시만 보관 (저장소에 비밀번호가 그대로 남지 않도록)
+PASSWORD_SHA256 = "d7eb0880f7793fb66fc12fc495b3236aecfa86271a7a474d95ea5a92c9ad0d0f"
+
+
+def _password_ok(pw: str) -> bool:
+    """Secrets에 app_password가 있으면 그 값을, 없으면 내장 해시를 사용"""
+    try:
+        expected = st.secrets.get("app_password")
+    except Exception:
+        expected = None
+    if expected:
+        return hmac.compare_digest(pw, str(expected))
+    return hmac.compare_digest(
+        hashlib.sha256(pw.encode("utf-8")).hexdigest(), PASSWORD_SHA256)
+
+
+def require_login() -> None:
+    if st.session_state.get("_authed"):
+        return
+
+    st.title("🔒 상품 수익율 검색기")
+    st.caption("비밀번호를 입력하세요.")
+    with st.form("login_form"):
+        pw = st.text_input("비밀번호", type="password", label_visibility="collapsed",
+                           placeholder="비밀번호")
+        submitted = st.form_submit_button("로그인")
+
+    if submitted:
+        if _password_ok(pw):
+            st.session_state["_authed"] = True
+            st.rerun()
+        else:
+            st.error("비밀번호가 올바르지 않습니다.")
+    st.stop()
+
+
+require_login()
 
 
 # ──────────────────────────────────────────────
