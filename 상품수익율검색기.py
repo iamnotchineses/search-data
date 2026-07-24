@@ -115,6 +115,9 @@ def load_all_data(file_sigs: tuple) -> pd.DataFrame:
     # 수익율 직접 계산
     df["수익율"] = (df[COL_PROFIT] / df[COL_PRICE] * 100).round(2)
 
+    # 정산금 = 판매가 - 수수료 = 출고원가 + 수익(실배송비)
+    df["정산금"] = (df[COL_COST] + df[COL_PROFIT]).round(0)
+
     return df.reset_index(drop=True)
 
 
@@ -235,7 +238,7 @@ if year_sel:
 detail = detail.sort_values(COL_DATE, ascending=False)
 
 show = detail[[COL_DATE, COL_MALL, COL_BRAND, COL_MODEL, COL_QTY, COL_COST,
-               COL_PRICE, COL_PROFIT, "수익율", COL_NOTE]].rename(
+               COL_PRICE, "정산금", COL_PROFIT, "수익율", COL_NOTE]].rename(
     columns={COL_COST: "원가", COL_PRICE: "최종판매가",
              COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
 show[COL_DATE] = show[COL_DATE].dt.strftime("%Y-%m-%d")
@@ -248,6 +251,7 @@ st.dataframe(
     column_config={
         "원가": st.column_config.NumberColumn(format="%,d원"),
         "최종판매가": st.column_config.NumberColumn(format="%,d원"),
+        "정산금": st.column_config.NumberColumn(format="%,d원"),
         "수익(실배송비)": st.column_config.NumberColumn(format="%,d원"),
         "수익율(%)": st.column_config.NumberColumn(format="%.2f%%"),
     },
@@ -258,7 +262,9 @@ with st.expander("몰별 요약 보기"):
     g = detail.groupby(COL_MALL).agg(
         건수=(COL_MODEL, "size"),
         수량합=(COL_QTY, "sum"),
+        원가합=(COL_COST, "sum"),
         매출합=(COL_PRICE, "sum"),
+        정산금합=("정산금", "sum"),
         수익합=(COL_PROFIT, "sum"),
     ).sort_values("매출합", ascending=False)
     g["수익율(%)"] = (g["수익합"] / g["매출합"] * 100).round(2)
@@ -267,7 +273,9 @@ with st.expander("몰별 요약 보기"):
         use_container_width=True,
         hide_index=True,
         column_config={
+            "원가합": st.column_config.NumberColumn(format="%,d원"),
             "매출합": st.column_config.NumberColumn(format="%,d원"),
+            "정산금합": st.column_config.NumberColumn(format="%,d원"),
             "수익합": st.column_config.NumberColumn(format="%,d원"),
             "수익율(%)": st.column_config.NumberColumn(format="%.2f%%"),
         },
