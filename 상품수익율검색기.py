@@ -207,29 +207,30 @@ st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 ·
 # ── 상단 KPI ──
 def agg_stats(sub: pd.DataFrame) -> dict:
     if sub.empty:
-        return {"건수": 0, "평균수익": None, "수익율": None}
+        return {"건수": 0, "수익율": None, "평균정산금": None}
     sales = sub[COL_PRICE].sum()
     profit = sub[COL_PROFIT].sum()
     return {"건수": len(sub),
-            "평균수익": sub[COL_PROFIT].mean(),
-            "수익율": (profit / sales * 100) if sales else None}
+            "수익율": (profit / sales * 100) if sales else None,
+            "평균정산금": sub["정산금"].mean()}
 
 
 years = [2024, 2025, 2026]
-overall = agg_stats(hit[hit["연도"].isin(years)])
+periods = [("최근 3개년", hit[hit["연도"].isin(years)])]
+periods += [(f"{y}년", hit[hit["연도"] == y]) for y in years]
 
 cols = st.columns(4)
-with cols[0]:
-    st.metric("최근 3개년 평균 수익", fmt_won(overall["평균수익"]),
-              fmt_pct(overall["수익율"]) + " (수익율)", delta_color="off")
-for col, yr in zip(cols[1:], years):
-    s = agg_stats(hit[hit["연도"] == yr])
+for col, (label, sub) in zip(cols, periods):
+    s = agg_stats(sub)
     with col:
         if s["건수"]:
-            st.metric(f"{yr}년 평균 수익 ({s['건수']:,}건)", fmt_won(s["평균수익"]),
-                      fmt_pct(s["수익율"]) + " (수익율)", delta_color="off")
+            st.markdown(f"**{label}** · {s['건수']:,}건")
+            st.metric("평균 수익율", fmt_pct(s["수익율"]))
+            st.metric("평균 정산금", fmt_won(s["평균정산금"]))
         else:
-            st.metric(f"{yr}년", "데이터 없음")
+            st.markdown(f"**{label}** · 데이터 없음")
+            st.metric("평균 수익율", "-")
+            st.metric("평균 정산금", "-")
 
 st.divider()
 
