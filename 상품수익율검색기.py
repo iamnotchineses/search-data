@@ -33,6 +33,7 @@ COL_MODEL = "모델명"
 COL_MALL = "쇼핑몰"
 COL_BRAND = "브랜드"
 COL_QTY = "수량"
+COL_COST = "출고원가"
 COL_PRICE = "최종판매가"
 COL_PROFIT = "수익원(실배송비)"
 COL_DATE = "출고날짜"
@@ -40,7 +41,7 @@ COL_NOTE = "비고"
 
 USE_COLS = [
     COL_ORDER, COL_MALL, COL_BRAND, "대카테고리", "카테고리",
-    COL_MODEL, COL_QTY, COL_PRICE, COL_PROFIT, COL_DATE, COL_NOTE,
+    COL_MODEL, COL_QTY, COL_COST, COL_PRICE, COL_PROFIT, COL_DATE, COL_NOTE,
 ]
 
 st.set_page_config(page_title="상품 수익율 검색기", page_icon="🔍", layout="wide")
@@ -99,7 +100,7 @@ def load_all_data(file_sigs: tuple) -> pd.DataFrame:
     df["연도"] = df[COL_DATE].dt.year
 
     # 숫자형 보정
-    for c in (COL_QTY, COL_PRICE, COL_PROFIT):
+    for c in (COL_QTY, COL_COST, COL_PRICE, COL_PROFIT):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
     # 반품 제거: 음수 수량이 포함된 (주문번호+모델명) 키 전체 삭제
@@ -233,9 +234,10 @@ if year_sel:
 
 detail = detail.sort_values(COL_DATE, ascending=False)
 
-show = detail[[COL_DATE, COL_MALL, COL_BRAND, COL_MODEL, COL_QTY,
+show = detail[[COL_DATE, COL_MALL, COL_BRAND, COL_MODEL, COL_QTY, COL_COST,
                COL_PRICE, COL_PROFIT, "수익율", COL_NOTE]].rename(
-    columns={COL_PRICE: "최종판매가", COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
+    columns={COL_COST: "원가", COL_PRICE: "최종판매가",
+             COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
 show[COL_DATE] = show[COL_DATE].dt.strftime("%Y-%m-%d")
 
 st.dataframe(
@@ -244,6 +246,7 @@ st.dataframe(
     hide_index=True,
     height=520,
     column_config={
+        "원가": st.column_config.NumberColumn(format="%,d원"),
         "최종판매가": st.column_config.NumberColumn(format="%,d원"),
         "수익(실배송비)": st.column_config.NumberColumn(format="%,d원"),
         "수익율(%)": st.column_config.NumberColumn(format="%.2f%%"),
