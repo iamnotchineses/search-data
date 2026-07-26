@@ -22,6 +22,7 @@ import hmac
 import os
 import re
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -275,6 +276,34 @@ for col, (label, sub) in zip(cols, periods):
             st.markdown(f"**{label}** · 데이터 없음")
             st.metric("평균 수익율", "-")
             st.metric("평균 정산금", "-")
+
+st.divider()
+
+# ── 수익율 구간별 판매수량 ──
+st.subheader("수익율 구간별 판매수량")
+
+BIN_LO, BIN_HI, BIN_STEP = -5, 50, 5
+edges = list(range(BIN_LO, BIN_HI + BIN_STEP, BIN_STEP))
+labels = [f"{BIN_LO}% 미만"] + [f"{a}~{b}%" for a, b in zip(edges[:-1], edges[1:])] + [f"{BIN_HI}% 이상"]
+bins = [-np.inf] + edges + [np.inf]
+
+hist = (hit.assign(구간=pd.cut(hit["수익율"], bins=bins, labels=labels, right=False))
+        .groupby("구간", observed=False)[COL_QTY].sum())
+hist = hist[hist.cumsum() > 0]                      # 앞쪽 빈 구간 제거
+hist = hist[::-1][(hist[::-1].cumsum() > 0)][::-1]  # 뒤쪽 빈 구간 제거
+
+chart_df = hist.reset_index()
+chart_df.columns = ["수익율 구간", "판매수량"]
+chart_df["수익율 구간"] = chart_df["수익율 구간"].astype(str)
+
+st.altair_chart(
+    alt.Chart(chart_df).mark_bar().encode(
+        x=alt.X("수익율 구간:N", sort=None, axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("판매수량:Q"),
+        tooltip=["수익율 구간", alt.Tooltip("판매수량:Q", format=",")],
+    ).properties(height=260),
+    use_container_width=True,
+)
 
 st.divider()
 
