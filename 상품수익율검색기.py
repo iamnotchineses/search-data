@@ -308,6 +308,7 @@ for col, yr in zip(chart_cols, years):
                .agg(판매수량=(COL_QTY, "sum"), 평균정산금=("정산금", "mean"))
                .reindex(used))
         agg["판매수량"] = agg["판매수량"].fillna(0).astype(int)
+        agg = agg[agg["판매수량"] > 0]          # 판매 없는 구간 제거
 
         # x축 라벨: 구간 + (해당 연도 평균 정산금, 만원 축약) 2줄 표시
         def _lab(b, v):
