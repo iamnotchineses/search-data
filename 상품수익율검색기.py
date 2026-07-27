@@ -287,36 +287,39 @@ edges = list(range(BIN_LO, BIN_HI + BIN_STEP, BIN_STEP))
 labels = [f"{BIN_LO}% 미만"] + [f"{a}~{b}%" for a, b in zip(edges[:-1], edges[1:])] + [f"{BIN_HI}% 이상"]
 bins = [-np.inf] + edges + [np.inf]
 
-agg = (hit.assign(구간=pd.cut(hit["수익율"], bins=bins, labels=labels, right=False))
-       .groupby("구간", observed=False)
+hit_b = hit.assign(구간=pd.cut(hit["수익율"], bins=bins, labels=labels, right=False))
+
+# 구간별 전체 집계 (빈 양끝 구간 제거 + 라벨용 평균 정산금)
+tot = (hit_b.groupby("구간", observed=False)
        .agg(판매수량=(COL_QTY, "sum"), 평균정산금=("정산금", "mean")))
-agg = agg[agg["판매수량"].cumsum() > 0]                                    # 앞쪽 빈 구간 제거
-agg = agg[::-1][(agg["판매수량"][::-1].cumsum() > 0)][::-1]                # 뒤쪽 빈 구간 제거
+tot = tot[tot["판매수량"].cumsum() > 0]
+tot = tot[::-1][(tot["판매수량"][::-1].cumsum() > 0)][::-1]
+used = list(tot.index)
 
-chart_df = agg.reset_index()
-chart_df.columns = ["수익율 구간", "판매수량", "평균정산금"]
-chart_df["수익율 구간"] = chart_df["수익율 구간"].astype(str)
-chart_df["평균정산금"] = chart_df["평균정산금"].round(0)
+# x축 라벨: "15~20%|(23,176원)" → 차트에서 2줄로 분리 표시
+label_map = {b: f"{b}|({tot.loc[b, '평균정산금']:,.0f}원)" for b in used}
 
-_x = alt.X("수익율 구간:N", sort=None, axis=alt.Axis(labelAngle=0))
-_tip = ["수익율 구간",
-        alt.Tooltip("판매수량:Q", format=","),
-        alt.Tooltip("평균정산금:Q", format=",.0f", title="평균 정산금(원)")]
+# 연도별 판매수량
+by_year = (hit_b[hit_b["구간"].isin(used)]
+           .groupby(["구간", "연도"], observed=True)
+           .agg(판매수량=(COL_QTY, "sum"), 평균정산금=("정산금", "mean"))
+           .reset_index())
+by_year["구간라벨"] = by_year["구간"].map(label_map).astype(str)
+by_year["연도"] = by_year["연도"].astype(str)
+by_year["평균정산금"] = by_year["평균정산금"].round(0)
 
+order = [label_map[b] for b in used]
 st.altair_chart(
-    alt.Chart(chart_df).mark_bar().encode(
-        x=_x, y=alt.Y("판매수량:Q"), tooltip=_tip,
-    ).properties(height=240),
-    use_container_width=True,
-)
-
-st.markdown("**구간별 평균 정산금**")
-st.altair_chart(
-    alt.Chart(chart_df).mark_bar(color="#83c9ff").encode(
-        x=_x,
-        y=alt.Y("평균정산금:Q", title="평균 정산금(원)", axis=alt.Axis(format=",.0f")),
-        tooltip=_tip,
-    ).properties(height=200),
+    alt.Chart(by_year).mark_bar().encode(
+        x=alt.X("구간라벨:N", sort=order, title="수익율 구간 (평균 정산금)",
+                axis=alt.Axis(labelAngle=0, labelExpr="split(datum.label, '|')")),
+        xOffset=alt.XOffset("연도:N"),
+        y=alt.Y("판매수량:Q"),
+        color=alt.Color("연도:N", legend=alt.Legend(title="연도", orient="top")),
+        tooltip=["연도", alt.Tooltip("구간:N", title="수익율 구간"),
+                 alt.Tooltip("판매수량:Q", format=","),
+                 alt.Tooltip("평균정산금:Q", format=",.0f", title="평균 정산금(원)")],
+    ).properties(height=280),
     use_container_width=True,
 )
 
