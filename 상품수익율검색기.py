@@ -287,21 +287,36 @@ edges = list(range(BIN_LO, BIN_HI + BIN_STEP, BIN_STEP))
 labels = [f"{BIN_LO}% 미만"] + [f"{a}~{b}%" for a, b in zip(edges[:-1], edges[1:])] + [f"{BIN_HI}% 이상"]
 bins = [-np.inf] + edges + [np.inf]
 
-hist = (hit.assign(구간=pd.cut(hit["수익율"], bins=bins, labels=labels, right=False))
-        .groupby("구간", observed=False)[COL_QTY].sum())
-hist = hist[hist.cumsum() > 0]                      # 앞쪽 빈 구간 제거
-hist = hist[::-1][(hist[::-1].cumsum() > 0)][::-1]  # 뒤쪽 빈 구간 제거
+agg = (hit.assign(구간=pd.cut(hit["수익율"], bins=bins, labels=labels, right=False))
+       .groupby("구간", observed=False)
+       .agg(판매수량=(COL_QTY, "sum"), 평균정산금=("정산금", "mean")))
+agg = agg[agg["판매수량"].cumsum() > 0]                                    # 앞쪽 빈 구간 제거
+agg = agg[::-1][(agg["판매수량"][::-1].cumsum() > 0)][::-1]                # 뒤쪽 빈 구간 제거
 
-chart_df = hist.reset_index()
-chart_df.columns = ["수익율 구간", "판매수량"]
+chart_df = agg.reset_index()
+chart_df.columns = ["수익율 구간", "판매수량", "평균정산금"]
 chart_df["수익율 구간"] = chart_df["수익율 구간"].astype(str)
+chart_df["평균정산금"] = chart_df["평균정산금"].round(0)
+
+_x = alt.X("수익율 구간:N", sort=None, axis=alt.Axis(labelAngle=0))
+_tip = ["수익율 구간",
+        alt.Tooltip("판매수량:Q", format=","),
+        alt.Tooltip("평균정산금:Q", format=",.0f", title="평균 정산금(원)")]
 
 st.altair_chart(
     alt.Chart(chart_df).mark_bar().encode(
-        x=alt.X("수익율 구간:N", sort=None, axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("판매수량:Q"),
-        tooltip=["수익율 구간", alt.Tooltip("판매수량:Q", format=",")],
-    ).properties(height=260),
+        x=_x, y=alt.Y("판매수량:Q"), tooltip=_tip,
+    ).properties(height=240),
+    use_container_width=True,
+)
+
+st.markdown("**구간별 평균 정산금**")
+st.altair_chart(
+    alt.Chart(chart_df).mark_bar(color="#83c9ff").encode(
+        x=_x,
+        y=alt.Y("평균정산금:Q", title="평균 정산금(원)", axis=alt.Axis(format=",.0f")),
+        tooltip=_tip,
+    ).properties(height=200),
     use_container_width=True,
 )
 
