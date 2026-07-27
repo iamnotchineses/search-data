@@ -321,8 +321,9 @@ for col, yr in zip(chart_cols, years):
             alt.Chart(chart_df).mark_bar().encode(
                 x=alt.X("구간라벨:N", sort=list(chart_df["구간라벨"]),
                         title=None,
-                        axis=alt.Axis(labelAngle=-90, labelExpr="split(datum.label, '|')",
-                                      labelFontSize=10)),
+                        axis=alt.Axis(labelAngle=0, labelExpr="split(datum.label, '|')",
+                                      labelFontSize=12, labelFontWeight="bold",
+                                      labelColor="#31333F", labelLimit=0)),
                 y=alt.Y("판매수량:Q", title=None),
                 tooltip=[alt.Tooltip("구간:N", title="수익율 구간"),
                          alt.Tooltip("판매수량:Q", format=","),
