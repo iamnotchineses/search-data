@@ -309,9 +309,9 @@ for col, yr in zip(chart_cols, years):
                .reindex(used))
         agg["판매수량"] = agg["판매수량"].fillna(0).astype(int)
 
-        # x축 라벨: 구간 + (해당 연도 평균 정산금) 2줄 표시
+        # x축 라벨: 구간 + (해당 연도 평균 정산금, 만원 축약) 2줄 표시
         def _lab(b, v):
-            return f"{b}|({v:,.0f}원)" if pd.notna(v) else f"{b}|(-)"
+            return f"{b}|({v/10000:,.1f}만)" if pd.notna(v) else f"{b}|(-)"
         chart_df = agg.reset_index()
         chart_df["구간라벨"] = [_lab(b, v) for b, v in zip(chart_df["구간"].astype(str),
                                                            chart_df["평균정산금"])]
@@ -322,8 +322,9 @@ for col, yr in zip(chart_cols, years):
                 x=alt.X("구간라벨:N", sort=list(chart_df["구간라벨"]),
                         title=None,
                         axis=alt.Axis(labelAngle=0, labelExpr="split(datum.label, '|')",
-                                      labelFontSize=12, labelFontWeight="bold",
-                                      labelColor="#31333F", labelLimit=0)),
+                                      labelFontSize=11, labelFontWeight="bold",
+                                      labelColor="#31333F", labelLimit=0,
+                                      labelOverlap=False)),
                 y=alt.Y("판매수량:Q", title=None),
                 tooltip=[alt.Tooltip("구간:N", title="수익율 구간"),
                          alt.Tooltip("판매수량:Q", format=","),
