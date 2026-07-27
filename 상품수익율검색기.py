@@ -255,9 +255,10 @@ def agg_stats(sub: pd.DataFrame) -> dict:
         return {"건수": 0, "수익율": None, "평균정산금": None}
     sales = sub[COL_PRICE].sum()
     profit = sub[COL_PROFIT].sum()
+    qty = sub[COL_QTY].sum()
     return {"건수": len(sub),
             "수익율": (profit / sales * 100) if sales else None,
-            "평균정산금": sub["정산금"].mean()}
+            "평균정산금": (sub["정산금"].sum() / qty) if qty else None}
 
 
 years = [2024, 2025, 2026]
@@ -305,8 +306,9 @@ for col, yr in zip(chart_cols, years):
             continue
 
         agg = (sub.groupby("구간", observed=False)
-               .agg(판매수량=(COL_QTY, "sum"), 평균정산금=("정산금", "mean"))
+               .agg(판매수량=(COL_QTY, "sum"), 정산금합=("정산금", "sum"))
                .reindex(used))
+        agg["평균정산금"] = agg["정산금합"] / agg["판매수량"]
         agg["판매수량"] = agg["판매수량"].fillna(0).astype(int)
         agg = agg[agg["판매수량"] > 0]          # 판매 없는 구간 제거
 
