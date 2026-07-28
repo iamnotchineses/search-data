@@ -31,8 +31,8 @@ import streamlit as st
 # 설정
 # ──────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-RAW_PATTERN_XLSX = os.path.join(BASE_DIR, "*년도매출.xlsx")
-RAW_PATTERN_PQ = os.path.join(BASE_DIR, "*년도매출.parquet")
+RAW_PATTERN_XLSX = os.path.join(BASE_DIR, "*매출*.xlsx")
+RAW_PATTERN_PQ = os.path.join(BASE_DIR, "*매출*.parquet")
 CACHE_DIR = os.path.join(BASE_DIR, "_cache")
 
 HEADER_ROW = 1   # 헤더가 2번째 행
@@ -208,7 +208,7 @@ st.title("🔍 상품 수익율 검색기")
 file_sigs = get_file_sigs()
 if not file_sigs:
     st.error("데이터 파일이 없습니다. 이 스크립트와 같은 폴더에 "
-             "'NN년도매출.parquet' (또는 .xlsx) 형식으로 넣어주세요.")
+             "파일명에 '매출'이 들어간 .parquet(또는 .xlsx)을 넣어주세요.")
     st.caption(f"현재 폴더: {BASE_DIR}")
     st.stop()
 
@@ -296,6 +296,10 @@ tot = tot[tot.cumsum() > 0]
 tot = tot[::-1][(tot[::-1].cumsum() > 0)][::-1]
 used = list(tot.index)
 
+# 연도 간 y축 통일: 전체 연도에서 구간별 최대 판매수량
+y_max = int((hit_b[hit_b["구간"].isin(used)]
+             .groupby(["연도", "구간"], observed=True)[COL_QTY].sum().max() or 0))
+
 chart_cols = st.columns(len(years))
 for col, yr in zip(chart_cols, years):
     with col:
@@ -328,7 +332,8 @@ for col, yr in zip(chart_cols, years):
                                       labelFontSize=11, labelFontWeight="bold",
                                       labelColor="#31333F", labelLimit=0,
                                       labelOverlap=False)),
-                y=alt.Y("판매수량:Q", title=None),
+                y=alt.Y("판매수량:Q", title=None,
+                        scale=alt.Scale(domain=[0, y_max])),
                 tooltip=[alt.Tooltip("구간:N", title="수익율 구간"),
                          alt.Tooltip("판매수량:Q", format=","),
                          alt.Tooltip("평균정산금:Q", format=",.0f", title="평균 정산금(원)")],
