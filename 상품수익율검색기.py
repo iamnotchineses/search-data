@@ -387,12 +387,12 @@ st.download_button("CSV 다운로드", show.to_csv(index=False).encode("utf-8-si
 # ── 몰별 요약 ──
 def mall_summary(sub: pd.DataFrame) -> pd.DataFrame:
     g = (sub.groupby(COL_MALL, observed=True)
-         .agg(건수=(COL_MODEL, "size"), 수량합=(COL_QTY, "sum"),
-              원가합=(COL_COST, "sum"), 매출합=(COL_PRICE, "sum"),
-              정산금합=("정산금", "sum"), 수익합=(COL_PROFIT, "sum"))
-         .sort_values("매출합", ascending=False))
-    g["수익율(%)"] = (g["수익합"] / g["매출합"] * 100).round(2)
-    return g.reset_index()
+         .agg(수량합=(COL_QTY, "sum"), 총매출=(COL_PRICE, "sum"),
+              _정산금합=("정산금", "sum"), _수익합=(COL_PROFIT, "sum"))
+         .sort_values("총매출", ascending=False))
+    g["평균정산금"] = (g["_정산금합"] / g["수량합"]).round(0)
+    g["평균수익율(%)"] = (g["_수익합"] / g["총매출"] * 100).round(2)
+    return g.drop(columns=["_정산금합", "_수익합"]).reset_index()
 
 
 with st.expander("몰별 요약 보기", expanded=False):
@@ -406,7 +406,6 @@ with st.expander("몰별 요약 보기", expanded=False):
                 continue
             st.dataframe(
                 mall_summary(sub), hide_index=True,
-                column_config={"건수": NUM, "수량합": NUM, "원가합": WON, "매출합": WON,
-                               "정산금합": WON, "수익합": WON,
-                               "수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
+                column_config={"수량합": NUM, "총매출": WON, "평균정산금": WON,
+                               "평균수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
             )
