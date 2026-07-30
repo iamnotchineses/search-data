@@ -383,15 +383,25 @@ st.download_button("CSV 다운로드", show.to_csv(index=False).encode("utf-8-si
                    file_name=f"수익율_{query.strip()}.csv", mime="text/csv")
 
 # ── 몰별 요약 ──
-with st.expander("몰별 요약 보기"):
-    g = (detail.groupby(COL_MALL, observed=True)
+def mall_summary(sub: pd.DataFrame) -> pd.DataFrame:
+    g = (sub.groupby(COL_MALL, observed=True)
          .agg(건수=(COL_MODEL, "size"), 수량합=(COL_QTY, "sum"),
               원가합=(COL_COST, "sum"), 매출합=(COL_PRICE, "sum"),
               정산금합=("정산금", "sum"), 수익합=(COL_PROFIT, "sum"))
          .sort_values("매출합", ascending=False))
     g["수익율(%)"] = (g["수익합"] / g["매출합"] * 100).round(2)
-    st.dataframe(
-        g.reset_index(), hide_index=True,
-        column_config={"원가합": WON, "매출합": WON, "정산금합": WON, "수익합": WON,
-                       "수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
-    )
+    return g.reset_index()
+
+
+with st.expander("몰별 요약 보기"):
+    tabs = st.tabs(["전체"] + [f"{y}년" for y in years])
+    for tab, sub in zip(tabs, [detail] + [detail[detail["연도"] == y] for y in years]):
+        with tab:
+            if sub.empty:
+                st.caption("데이터 없음")
+                continue
+            st.dataframe(
+                mall_summary(sub), hide_index=True,
+                column_config={"원가합": WON, "매출합": WON, "정산금합": WON, "수익합": WON,
+                               "수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
+            )
