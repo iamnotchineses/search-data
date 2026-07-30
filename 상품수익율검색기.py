@@ -276,8 +276,9 @@ hit = df[df[COL_MODEL].isin(matched)]
 
 brands = [str(b) for b in hit[COL_BRAND].dropna().unique()[:5]]
 
-# 상품등급: 이익율(수익 ÷ 정산금) 기준 A~D
-GRADE_CUTS = [(25, "A", "#1a7f37"), (15, "B", "#0969da"), (5, "C", "#bf8700")]
+# 상품등급: 이익율(수익 ÷ 정산금) 기준 A~E
+GRADE_CUTS = [(30, "A", "#1a7f37"), (18, "B", "#0969da"),
+              (5, "C", "#bf8700"), (-5, "D", "#d4691e")]
 
 def grade_of(sub: pd.DataFrame):
     settle = sub["정산금"].sum()
@@ -287,31 +288,22 @@ def grade_of(sub: pd.DataFrame):
     for cut, gr, color in GRADE_CUTS:
         if rate >= cut:
             return (gr, color), rate
-    return ("D", "#cf222e"), rate
+    return ("E", "#cf222e"), rate
 
 g_res, g_rate = grade_of(hit[hit["연도"].isin([2024, 2025, 2026])])
 
-head_l, head_r = st.columns([3, 1])
-with head_l:
-    st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 · "
-                f"몰 {hit[COL_MALL].nunique()}곳 · 브랜드: {', '.join(brands)}")
-with head_r:
-    if g_res:
-        st.markdown(
-            f"<div style='text-align:right'>상품등급 "
-            f"<span style='font-size:2rem;font-weight:800;color:{g_res[1]}'>{g_res[0]}</span>"
-            f"<br><span style='font-size:0.85rem;color:#666'>이익율 {g_rate:.2f}% (수익÷정산금)</span></div>",
-            unsafe_allow_html=True)
+st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 · "
+            f"몰 {hit[COL_MALL].nunique()}곳 · 브랜드: {', '.join(brands)}")
 
 
 # ── 상단 KPI ──
 def agg_stats(sub: pd.DataFrame) -> dict:
     if sub.empty:
-        return {"건수": 0, "수익율": None, "평균정산금": None}
+        return {"수량": 0, "수익율": None, "평균정산금": None}
     sales = sub[COL_PRICE].sum()
     profit = sub[COL_PROFIT].sum()
     qty = sub[COL_QTY].sum()
-    return {"건수": len(sub),
+    return {"수량": int(qty),
             "수익율": (profit / sales * 100) if sales else None,
             "평균정산금": (sub["정산금"].sum() / qty) if qty else None}
 
@@ -320,18 +312,29 @@ years = [2024, 2025, 2026]
 periods = [("최근 3개년", hit[hit["연도"].isin(years)])]
 periods += [(f"{y}년", hit[hit["연도"] == y]) for y in years]
 
-cols = st.columns(4)
+cols = st.columns(5)
 for col, (label, sub) in zip(cols, periods):
     s = agg_stats(sub)
     with col:
-        if s["건수"]:
-            st.markdown(f"**{label}** · {s['건수']:,}건")
+        if s["수량"]:
+            st.markdown(f"**{label}** · {s['수량']:,}개")
             st.metric("평균 수익율", fmt_pct(s["수익율"]))
             st.metric("평균 정산금", fmt_won(s["평균정산금"]))
         else:
             st.markdown(f"**{label}** · 데이터 없음")
             st.metric("평균 수익율", "-")
             st.metric("평균 정산금", "-")
+
+with cols[4]:
+    st.markdown("**상품등급**")
+    if g_res:
+        st.markdown(
+            f"<div style='line-height:1.1'>"
+            f"<span style='font-size:4.5rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
+            f"<br><span style='font-size:0.9rem;color:#666'>이익율 {g_rate:.2f}%<br>(수익÷정산금)</span></div>",
+            unsafe_allow_html=True)
+    else:
+        st.caption("산출 불가")
 
 st.divider()
 
