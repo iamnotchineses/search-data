@@ -343,6 +343,7 @@ if stock_df is not None:
                 base = pd.Timestamp(r["기준일"])
                 for dstr, qstr in _RX_IN.findall(str(r["입고이력"]).replace(",", "")):
                     yr_in = (base - pd.Timedelta(days=int(dstr))).year
+                    yr_in = max(yr_in, 2024)   # 24년 이전 입고 → 24년 귀속
                     inbound_by_year[yr_in] = inbound_by_year.get(yr_in, 0) + int(qstr)
 
 st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 · "
@@ -374,14 +375,15 @@ for col, (label, sub) in zip(cols, periods):
         else:
             inb = inbound_by_year.get(int(label[:4]), 0)
         inb_txt = f"{inb:,}" if stock_info else "-"
+        inb_label = "입고(~24년)" if label == "2024년" else "입고"
         if s["수량"]:
             st.markdown(f"**{label}**")
-            st.caption(f"입고 {inb_txt}개 / 판매 {s['수량']:,}개")
+            st.caption(f"{inb_label} {inb_txt}개 / 판매 {s['수량']:,}개")
             st.metric("평균 수익율", fmt_pct(s["수익율"]))
             st.metric("평균 정산금", fmt_won(s["평균정산금"]))
         else:
             st.markdown(f"**{label}**")
-            st.caption(f"입고 {inb_txt}개 / 판매 0개")
+            st.caption(f"{inb_label} {inb_txt}개 / 판매 0개")
             st.metric("평균 수익율", "-")
             st.metric("평균 정산금", "-")
 
