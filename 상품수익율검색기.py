@@ -34,6 +34,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAW_PATTERN_XLSX = os.path.join(BASE_DIR, "*매출*.xlsx")
 RAW_PATTERN_PQ = os.path.join(BASE_DIR, "*매출*.parquet")
 MALL_CLASS_PATTERN = os.path.join(BASE_DIR, "*몰분류*.xlsx")   # 분류=매장 → 통계 제외
+STOCK_FILE = os.path.join(BASE_DIR, "재고.parquet")             # 변환기가 생성
 CACHE_DIR = os.path.join(BASE_DIR, "_cache")
 
 HEADER_ROW = 1   # 헤더가 2번째 행
@@ -104,6 +105,21 @@ require_login()
 # ──────────────────────────────────────────────
 # 데이터 로딩
 # ──────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_stock(sig):
+    if sig is None:
+        return None
+    df = pd.read_parquet(STOCK_FILE)
+    df["모델명_U"] = df["모델명"].astype(str).str.upper()
+    return df
+
+
+def get_stock_sig():
+    if not os.path.exists(STOCK_FILE):
+        return None
+    return int(os.path.getmtime(STOCK_FILE))
+
+
 def get_mall_class_sig():
     files = sorted(glob.glob(MALL_CLASS_PATTERN))
     if not files:
@@ -224,6 +240,10 @@ def fmt_pct(v):
     return "-" if v is None or pd.isna(v) else f"{v:.2f}%"
 
 
+WON = st.column_config.NumberColumn(format="localized")
+NUM = st.column_config.NumberColumn(format="localized")
+
+
 # ──────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────
@@ -338,6 +358,42 @@ with cols[4]:
 
 st.divider()
 
+# ── 재고 현황 ──
+stock_df = load_stock(get_stock_sig())
+if stock_df is not None:
+    smask = pd.Series(True, index=stock_df.index)
+    for t in terms:
+        smask &= stock_df["모델명_U"].str.contains(re.escape(t), na=False, regex=True)
+    s_hit = stock_df[smask]
+    if not s_hit.empty:
+        st.subheader("재고 현황")
+        qty = int(s_hit["수량"].sum())
+        avail = int(s_hit["가용수량"].sum())
+        inbound = int(s_hit["총입고량"].sum())
+        turn = qty / inbound if inbound else None
+        recent = s_hit["입고경과일"].min()
+        k = st.columns(5)
+        k[0].metric("현재고", f"{qty:,}개")
+        k[1].metric("가용수량", f"{avail:,}개")
+        k[2].metric("총입고량", f"{inbound:,}개")
+        k[3].metric("회전율(재고÷입고)", f"{turn:.1%}" if turn is not None else "-")
+        k[4].metric("최근 입고", f"{int(recent)}일 전" if pd.notna(recent) else "-")
+        with st.expander(f"모델별 재고 상세 ({len(s_hit):,}개 모델)"):
+            s_show = s_hit[["모델명", "브랜드", "수량", "가용수량", "총입고량",
+                            "회전율", "입고경과일"]].sort_values("수량", ascending=False)
+            st.dataframe(
+                s_show, hide_index=True,
+                column_config={
+                    "수량": NUM, "가용수량": NUM, "총입고량": NUM,
+                    "회전율": st.column_config.NumberColumn(format="percent"),
+                    "입고경과일": st.column_config.NumberColumn(format="localized"),
+                },
+            )
+    else:
+        st.caption("재고 데이터에 해당 상품 없음")
+
+st.divider()
+
 # ── 수익율 구간별 판매수량 ──
 st.subheader("수익율 구간별 판매수량")
 
@@ -403,9 +459,6 @@ st.divider()
 
 # ── 몰별 상세 ──
 st.subheader("몰별 상세")
-
-WON = st.column_config.NumberColumn(format="localized")
-NUM = st.column_config.NumberColumn(format="localized")
 
 
 def mall_summary(sub: pd.DataFrame) -> pd.DataFrame:
