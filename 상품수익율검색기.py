@@ -33,6 +33,7 @@ import streamlit as st
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAW_PATTERN_XLSX = os.path.join(BASE_DIR, "*매출*.xlsx")
 RAW_PATTERN_PQ = os.path.join(BASE_DIR, "*매출*.parquet")
+MALL_CLASS_PATTERN = os.path.join(BASE_DIR, "*몰분류*.xlsx")   # 분류=매장 → 통계 제외
 CACHE_DIR = os.path.join(BASE_DIR, "_cache")
 
 HEADER_ROW = 1   # 헤더가 2번째 행
@@ -103,6 +104,24 @@ require_login()
 # ──────────────────────────────────────────────
 # 데이터 로딩
 # ──────────────────────────────────────────────
+def get_mall_class_sig():
+    files = sorted(glob.glob(MALL_CLASS_PATTERN))
+    if not files:
+        return None
+    return (files[0], int(os.path.getmtime(files[0])))
+
+
+def load_store_malls(sig) -> frozenset:
+    """몰분류 파일에서 분류='매장'인 몰 목록"""
+    if sig is None:
+        return frozenset()
+    m = pd.read_excel(sig[0], header=0)
+    m = m.iloc[:, :2]
+    m.columns = ["몰명", "분류"]
+    return frozenset(m.loc[m["분류"].astype(str).str.strip() == "매장", "몰명"]
+                     .dropna().astype(str).str.strip())
+
+
 def get_file_sigs():
     pq_files = sorted(glob.glob(RAW_PATTERN_PQ))
     pq_bases = {os.path.splitext(os.path.basename(f))[0] for f in pq_files}
@@ -145,7 +164,7 @@ def _read_one(path: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner="데이터 불러오는 중...")
-def load_all_data(file_sigs: tuple) -> pd.DataFrame:
+def load_all_data(file_sigs: tuple, mall_sig=None) -> pd.DataFrame:
     frames = [_read_one(p) for p, _ in file_sigs]
     df = pd.concat(frames, ignore_index=True)
     del frames
@@ -172,6 +191,11 @@ def load_all_data(file_sigs: tuple) -> pd.DataFrame:
 
     # 판매가 0원 행 제외
     df = df[df[COL_PRICE] > 0].drop(columns=[COL_ORDER])
+
+    # 매장(오프라인) 판매 제외
+    store_malls = load_store_malls(mall_sig)
+    if store_malls:
+        df = df[~df[COL_MALL].astype(str).str.strip().isin(store_malls)]
 
     # 메모리 절감
     for c in CAT_COLS:
@@ -212,15 +236,21 @@ if not file_sigs:
     st.caption(f"현재 폴더: {BASE_DIR}")
     st.stop()
 
+mall_sig = get_mall_class_sig()
+
 try:
-    df = load_all_data(file_sigs)
+    df = load_all_data(file_sigs, mall_sig)
 except Exception as e:
     st.error(f"데이터 로딩 실패: {e}")
     st.exception(e)
     st.stop()
 
 st.caption("데이터: " + ", ".join(os.path.basename(f) for f, _ in file_sigs)
-           + f" · {len(df):,}건 · 반품·0원 행 제외 · 수익율 = 수익(실배송비) ÷ 판매가 · 정산금 = 원가 + 수익")
+           + f" · {len(df):,}건 · 반품·0원 행"
+           + (" · 매장(오프라인) 판매" if mall_sig else "")
+           + " 제외 · 수익율 = 수익(실배송비) ÷ 판매가 · 정산금 = 원가 + 수익")
+if mall_sig is None:
+    st.warning("몰분류 파일(*몰분류*.xlsx)이 없어 매장(오프라인) 판매가 제외되지 않았습니다.")
 
 query = st.text_input("상품 라인명 검색", placeholder="예: A158WA, 590702 ...",
                       help="모델명 부분일치 (대소문자 무시, 공백으로 여러 단어 AND 검색)")
@@ -245,8 +275,33 @@ if not matched:
 hit = df[df[COL_MODEL].isin(matched)]
 
 brands = [str(b) for b in hit[COL_BRAND].dropna().unique()[:5]]
-st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 · "
-            f"몰 {hit[COL_MALL].nunique()}곳 · 브랜드: {', '.join(brands)}")
+
+# 상품등급: 이익율(수익 ÷ 정산금) 기준 A~D
+GRADE_CUTS = [(25, "A", "#1a7f37"), (15, "B", "#0969da"), (5, "C", "#bf8700")]
+
+def grade_of(sub: pd.DataFrame):
+    settle = sub["정산금"].sum()
+    if sub.empty or settle <= 0:
+        return None, None
+    rate = sub[COL_PROFIT].sum() / settle * 100
+    for cut, gr, color in GRADE_CUTS:
+        if rate >= cut:
+            return (gr, color), rate
+    return ("D", "#cf222e"), rate
+
+g_res, g_rate = grade_of(hit[hit["연도"].isin([2024, 2025, 2026])])
+
+head_l, head_r = st.columns([3, 1])
+with head_l:
+    st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 · "
+                f"몰 {hit[COL_MALL].nunique()}곳 · 브랜드: {', '.join(brands)}")
+with head_r:
+    if g_res:
+        st.markdown(
+            f"<div style='text-align:right'>상품등급 "
+            f"<span style='font-size:2rem;font-weight:800;color:{g_res[1]}'>{g_res[0]}</span>"
+            f"<br><span style='font-size:0.85rem;color:#666'>이익율 {g_rate:.2f}% (수익÷정산금)</span></div>",
+            unsafe_allow_html=True)
 
 
 # ── 상단 KPI ──
@@ -343,6 +398,39 @@ for col, yr in zip(chart_cols, years):
 
 st.divider()
 
+# ── 몰별 상세 ──
+st.subheader("몰별 상세")
+
+WON = st.column_config.NumberColumn(format="localized")
+NUM = st.column_config.NumberColumn(format="localized")
+
+
+def mall_summary(sub: pd.DataFrame) -> pd.DataFrame:
+    g = (sub.groupby(COL_MALL, observed=True)
+         .agg(수량합=(COL_QTY, "sum"), 총매출=(COL_PRICE, "sum"),
+              _정산금합=("정산금", "sum"), _수익합=(COL_PROFIT, "sum"))
+         .sort_values("총매출", ascending=False))
+    g["평균정산금"] = (g["_정산금합"] / g["수량합"]).round(0)
+    g["평균수익율(%)"] = (g["_수익합"] / g["총매출"] * 100).round(2)
+    return g.drop(columns=["_정산금합", "_수익합"]).reset_index()
+
+
+sum_cols = st.columns(len(years))
+for col, yr in zip(sum_cols, years):
+    with col:
+        st.markdown(f"**{yr}년**")
+        sub_y = hit[hit["연도"] == yr]
+        if sub_y.empty:
+            st.caption("데이터 없음")
+            continue
+        st.dataframe(
+            mall_summary(sub_y), hide_index=True,
+            column_config={"수량합": NUM, "총매출": WON, "평균정산금": WON,
+                           "평균수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
+        )
+
+st.divider()
+
 # ── 주문건별 상세 ──
 st.subheader("주문건별 상세")
 
@@ -370,8 +458,6 @@ show = detail[[COL_DATE, COL_MALL, COL_BRAND, COL_MODEL, COL_QTY, COL_COST,
              COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
 show[COL_DATE] = show[COL_DATE].dt.strftime("%Y-%m-%d")
 
-WON = st.column_config.NumberColumn(format="localized")
-NUM = st.column_config.NumberColumn(format="localized")
 st.dataframe(
     show,
     hide_index=True,
@@ -384,28 +470,4 @@ st.dataframe(
 st.download_button("CSV 다운로드", show.to_csv(index=False).encode("utf-8-sig"),
                    file_name=f"수익율_{query.strip()}.csv", mime="text/csv")
 
-# ── 몰별 요약 ──
-def mall_summary(sub: pd.DataFrame) -> pd.DataFrame:
-    g = (sub.groupby(COL_MALL, observed=True)
-         .agg(수량합=(COL_QTY, "sum"), 총매출=(COL_PRICE, "sum"),
-              _정산금합=("정산금", "sum"), _수익합=(COL_PROFIT, "sum"))
-         .sort_values("총매출", ascending=False))
-    g["평균정산금"] = (g["_정산금합"] / g["수량합"]).round(0)
-    g["평균수익율(%)"] = (g["_수익합"] / g["총매출"] * 100).round(2)
-    return g.drop(columns=["_정산금합", "_수익합"]).reset_index()
 
-
-with st.expander("몰별 요약 보기", expanded=False):
-    sum_cols = st.columns(len(years))
-    for col, yr in zip(sum_cols, years):
-        with col:
-            st.markdown(f"**{yr}년**")
-            sub = detail[detail["연도"] == yr]
-            if sub.empty:
-                st.caption("데이터 없음")
-                continue
-            st.dataframe(
-                mall_summary(sub), hide_index=True,
-                column_config={"수량합": NUM, "총매출": WON, "평균정산금": WON,
-                               "평균수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
-            )
