@@ -101,6 +101,13 @@ def require_login() -> None:
 
 require_login()
 
+st.markdown("""<style>
+div[data-testid="stMetricValue"] { font-size: 1.55rem; }
+div[data-testid="stMetricLabel"] { font-size: 0.78rem; }
+h1 { font-size: 1.6rem !important; }
+h3 { font-size: 1.15rem !important; }
+</style>""", unsafe_allow_html=True)
+
 
 # ──────────────────────────────────────────────
 # 데이터 로딩
@@ -312,6 +319,32 @@ def grade_of(sub: pd.DataFrame):
 
 g_res, g_rate = grade_of(hit[hit["연도"].isin([2024, 2025, 2026])])
 
+# ── 재고 매칭 (등급 밑 표시 + 연도별 입고 역산) ──
+_RX_IN = re.compile(r"(\d+)일전/(\d+)")
+stock_df = load_stock(get_stock_sig())
+stock_info, inbound_by_year = None, {}
+if stock_df is not None:
+    smask = pd.Series(True, index=stock_df.index)
+    for t in terms:
+        smask &= stock_df["모델명_U"].str.contains(re.escape(t), na=False, regex=True)
+    s_hit = stock_df[smask]
+    if not s_hit.empty:
+        _qty = int(s_hit["수량"].sum())
+        _inb = int(s_hit["총입고량"].sum())
+        _sold = max(_inb - _qty, 0)
+        stock_info = {
+            "현재고": _qty, "총입고량": _inb,
+            "회전율": (_sold / _inb) if _inb else None,
+            "최근입고": s_hit["입고경과일"].min(),
+        }
+        # 연도별 입고량 역산: 입고일 = 기준일 - N일
+        if "입고이력" in s_hit.columns and "기준일" in s_hit.columns:
+            for _, r in s_hit.iterrows():
+                base = pd.Timestamp(r["기준일"])
+                for dstr, qstr in _RX_IN.findall(str(r["입고이력"]).replace(",", "")):
+                    yr_in = (base - pd.Timedelta(days=int(dstr))).year
+                    inbound_by_year[yr_in] = inbound_by_year.get(yr_in, 0) + int(qstr)
+
 st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 · "
             f"몰 {hit[COL_MALL].nunique()}곳 · 브랜드: {', '.join(brands)}")
 
@@ -336,12 +369,19 @@ cols = st.columns(5)
 for col, (label, sub) in zip(cols, periods):
     s = agg_stats(sub)
     with col:
+        if label == "최근 3개년":
+            inb = sum(inbound_by_year.get(y, 0) for y in years)
+        else:
+            inb = inbound_by_year.get(int(label[:4]), 0)
+        inb_txt = f"{inb:,}" if stock_info else "-"
         if s["수량"]:
-            st.markdown(f"**{label}** · {s['수량']:,}개")
+            st.markdown(f"**{label}**")
+            st.caption(f"입고 {inb_txt}개 / 판매 {s['수량']:,}개")
             st.metric("평균 수익율", fmt_pct(s["수익율"]))
             st.metric("평균 정산금", fmt_won(s["평균정산금"]))
         else:
-            st.markdown(f"**{label}** · 데이터 없음")
+            st.markdown(f"**{label}**")
+            st.caption(f"입고 {inb_txt}개 / 판매 0개")
             st.metric("평균 수익율", "-")
             st.metric("평균 정산금", "-")
 
@@ -349,48 +389,24 @@ with cols[4]:
     st.markdown("**상품등급**")
     if g_res:
         st.markdown(
-            f"<div style='line-height:1.1'>"
-            f"<span style='font-size:4.5rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
-            f"<br><span style='font-size:0.9rem;color:#666'>이익율 {g_rate:.2f}%<br>(수익÷정산금)</span></div>",
+            f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
+            f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
+            f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%</span></div>",
             unsafe_allow_html=True)
     else:
-        st.caption("산출 불가")
-
-st.divider()
-
-# ── 재고 현황 ──
-stock_df = load_stock(get_stock_sig())
-if stock_df is not None:
-    smask = pd.Series(True, index=stock_df.index)
-    for t in terms:
-        smask &= stock_df["모델명_U"].str.contains(re.escape(t), na=False, regex=True)
-    s_hit = stock_df[smask]
-    if not s_hit.empty:
-        st.subheader("재고 현황")
-        qty = int(s_hit["수량"].sum())
-        avail = int(s_hit["가용수량"].sum())
-        inbound = int(s_hit["총입고량"].sum())
-        turn = qty / inbound if inbound else None
-        recent = s_hit["입고경과일"].min()
-        k = st.columns(5)
-        k[0].metric("현재고", f"{qty:,}개")
-        k[1].metric("가용수량", f"{avail:,}개")
-        k[2].metric("총입고량", f"{inbound:,}개")
-        k[3].metric("회전율(재고÷입고)", f"{turn:.1%}" if turn is not None else "-")
-        k[4].metric("최근 입고", f"{int(recent)}일 전" if pd.notna(recent) else "-")
-        with st.expander(f"모델별 재고 상세 ({len(s_hit):,}개 모델)"):
-            s_show = s_hit[["모델명", "브랜드", "수량", "가용수량", "총입고량",
-                            "회전율", "입고경과일"]].sort_values("수량", ascending=False)
-            st.dataframe(
-                s_show, hide_index=True,
-                column_config={
-                    "수량": NUM, "가용수량": NUM, "총입고량": NUM,
-                    "회전율": st.column_config.NumberColumn(format="percent"),
-                    "입고경과일": st.column_config.NumberColumn(format="localized"),
-                },
-            )
+        st.caption("등급 산출 불가")
+    if stock_info:
+        _t = stock_info["회전율"]
+        _r = stock_info["최근입고"]
+        st.markdown(
+            "<div style='font-size:0.85rem;line-height:1.7;border-top:1px solid #e6e6e6;padding-top:0.35rem'>"
+            f"총입고 <b>{stock_info['총입고량']:,}개</b><br>"
+            f"현재고 <b>{stock_info['현재고']:,}개</b><br>"
+            f"회전율(판매÷입고) <b>{_t:.1%}</b><br>".replace("nan%", "-")
+            + (f"최근입고 <b>{int(_r)}일 전</b>" if pd.notna(_r) else "최근입고 <b>-</b>")
+            + "</div>", unsafe_allow_html=True)
     else:
-        st.caption("재고 데이터에 해당 상품 없음")
+        st.caption("재고 데이터 없음")
 
 st.divider()
 
