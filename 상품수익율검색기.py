@@ -370,12 +370,14 @@ show = detail[[COL_DATE, COL_MALL, COL_BRAND, COL_MODEL, COL_QTY, COL_COST,
              COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
 show[COL_DATE] = show[COL_DATE].dt.strftime("%Y-%m-%d")
 
-WON = st.column_config.NumberColumn(format="%.0f")
+WON = st.column_config.NumberColumn(format="localized")
+NUM = st.column_config.NumberColumn(format="localized")
 st.dataframe(
     show,
     hide_index=True,
     height=520,
-    column_config={"원가": WON, "최종판매가": WON, "정산금": WON, "수익(실배송비)": WON,
+    column_config={"수량": NUM, "원가": WON, "최종판매가": WON, "정산금": WON,
+                   "수익(실배송비)": WON,
                    "수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
 )
 
@@ -393,15 +395,18 @@ def mall_summary(sub: pd.DataFrame) -> pd.DataFrame:
     return g.reset_index()
 
 
-with st.expander("몰별 요약 보기"):
-    tabs = st.tabs(["전체"] + [f"{y}년" for y in years])
-    for tab, sub in zip(tabs, [detail] + [detail[detail["연도"] == y] for y in years]):
-        with tab:
+with st.expander("몰별 요약 보기", expanded=False):
+    sum_cols = st.columns(len(years))
+    for col, yr in zip(sum_cols, years):
+        with col:
+            st.markdown(f"**{yr}년**")
+            sub = detail[detail["연도"] == yr]
             if sub.empty:
                 st.caption("데이터 없음")
                 continue
             st.dataframe(
                 mall_summary(sub), hide_index=True,
-                column_config={"원가합": WON, "매출합": WON, "정산금합": WON, "수익합": WON,
+                column_config={"건수": NUM, "수량합": NUM, "원가합": WON, "매출합": WON,
+                               "정산금합": WON, "수익합": WON,
                                "수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
             )
