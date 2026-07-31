@@ -316,7 +316,7 @@ hit = df[df[COL_MODEL].isin(matched)]
 brands = [str(b) for b in hit[COL_BRAND].dropna().unique()[:5]]
 
 # 상품등급: 이익율(수익 ÷ 정산금) 기준 A~E
-GRADE_CUTS = [(30, "A", "#1a7f37"), (15, "B", "#0969da"),
+GRADE_CUTS = [(25, "A", "#1a7f37"), (15, "B", "#0969da"),
               (5, "C", "#bf8700"), (-5, "D", "#d4691e")]
 
 def grade_of(sub: pd.DataFrame):
