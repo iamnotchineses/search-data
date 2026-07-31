@@ -376,6 +376,23 @@ if stock_df is not None:
                     oldest_days = row_days if oldest_days is None else max(oldest_days, row_days)
         stock_info["최초입고"] = oldest_days
 
+        # 완판(현재고 0) 상품: 최초 입고 → 마지막 판매까지 소요 기간
+        stock_info["완판일수"] = None
+        if stock_info["현재고"] == 0 and "기준일" in s_hit.columns:
+            first_in, base_ts = None, None
+            for _, r in s_hit.iterrows():
+                evs = _RX_IN.findall(str(r["입고이력"]).replace(",", ""))
+                if not evs:
+                    continue
+                b = pd.Timestamp(r["기준일"])
+                d_max = max(int(d) for d, _ in evs)
+                cand = b - pd.Timedelta(days=d_max)
+                if first_in is None or cand < first_in:
+                    first_in, base_ts = cand, b
+            last_sale = hit[COL_DATE].max() if not hit.empty else None
+            if first_in is not None and pd.notna(last_sale):
+                stock_info["완판일수"] = max((pd.Timestamp(last_sale) - first_in).days, 0)
+
 # 최초 입고 300일 경과마다 한 등급씩 강등 (600일=2등급, 900일=3등급 ...)
 GRADE_ORDER = ["A", "B", "C", "D", "E"]
 GRADE_COLORS = {"A": "#1a7f37", "B": "#0969da", "C": "#bf8700", "D": "#d4691e", "E": "#cf222e"}
@@ -449,8 +466,9 @@ with cols[4]:
             f"총입고 <b>{stock_info['총입고량']:,}개</b><br>"
             f"현재고 <b>{stock_info['현재고']:,}개</b><br>"
             f"회전율(판매÷입고) <b>{_t:.1%}</b><br>".replace("nan%", "-")
-            + (f"최근입고 <b>{int(_r)}일 전</b><br>" if pd.notna(_r) else "최근입고 <b>-</b><br>")
-            + (f"최초입고 <b>{stock_info['최초입고']}일 전</b>" if stock_info.get("최초입고") is not None else "최초입고 <b>-</b>")
+            + (f"최근입고 <b>{int(_r)}일 전</b>" if pd.notna(_r) else "최근입고 <b>-</b>")
+            + (f"<br>✅ 완판까지 <b>{stock_info['완판일수']:,}일</b>"
+               if stock_info.get("완판일수") is not None else "")
             + "</div>", unsafe_allow_html=True)
     else:
         st.caption("재고 데이터 없음")
