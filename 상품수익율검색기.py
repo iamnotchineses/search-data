@@ -349,14 +349,44 @@ if stock_df is not None:
             "회전율": (_sold / _inb) if _inb else None,
             "최근입고": s_hit["입고경과일"].min(),
         }
-        # 연도별 입고량 역산: 입고일 = 기준일 - N일
+        # 연도별 입고량 역산 + FIFO 기준 "가장 오래된 잔여재고"의 입고 경과일
+        # (오래된 입고분부터 판매 소진했다고 보고, 현재고가 걸쳐 있는 입고 회차의 경과일 사용)
+        oldest_days = None
         if "입고이력" in s_hit.columns and "기준일" in s_hit.columns:
             for _, r in s_hit.iterrows():
                 base = pd.Timestamp(r["기준일"])
-                for dstr, qstr in _RX_IN.findall(str(r["입고이력"]).replace(",", "")):
-                    yr_in = (base - pd.Timedelta(days=int(dstr))).year
+                events = [(int(d), int(q)) for d, q in
+                          _RX_IN.findall(str(r["입고이력"]).replace(",", ""))]
+                for d_, q_ in events:
+                    yr_in = (base - pd.Timedelta(days=d_)).year
                     yr_in = max(yr_in, 2024)   # 24년 이전 입고 → 24년 귀속
-                    inbound_by_year[yr_in] = inbound_by_year.get(yr_in, 0) + int(qstr)
+                    inbound_by_year[yr_in] = inbound_by_year.get(yr_in, 0) + q_
+                # FIFO: 이 모델의 잔여재고가 어느 입고 회차부터 남았는지
+                remain = int(r["수량"])
+                if remain <= 0 or not events:
+                    continue
+                row_days = None
+                for d_, q_ in sorted(events, key=lambda x: x[0]):   # 최신 → 과거 순
+                    remain -= q_
+                    row_days = d_
+                    if remain <= 0:
+                        break
+                # remain>0이면 입고이력(최대 3회)보다 재고가 많음 → 가장 오래된 회차로
+                if row_days is not None:
+                    oldest_days = row_days if oldest_days is None else max(oldest_days, row_days)
+        stock_info["최초입고"] = oldest_days
+
+# 최초 입고 300일 경과마다 한 등급씩 강등 (600일=2등급, 900일=3등급 ...)
+GRADE_ORDER = ["A", "B", "C", "D", "E"]
+GRADE_COLORS = {"A": "#1a7f37", "B": "#0969da", "C": "#bf8700", "D": "#d4691e", "E": "#cf222e"}
+demote_steps = 0
+if (g_res and stock_info and stock_info.get("최초입고") is not None):
+    demote_steps = int(stock_info["최초입고"] // 300)
+    if demote_steps > 0:
+        _i = min(GRADE_ORDER.index(g_res[0]) + demote_steps, len(GRADE_ORDER) - 1)
+        demote_steps = _i - GRADE_ORDER.index(g_res[0])   # 실제 적용된 단계
+        _g2 = GRADE_ORDER[_i]
+        g_res = (_g2, GRADE_COLORS[_g2])
 
 st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 · "
             f"몰 {hit[COL_MALL].nunique()}곳 · 브랜드: {', '.join(brands)}")
@@ -405,7 +435,9 @@ with cols[4]:
         st.markdown(
             f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
-            f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%</span></div>",
+            f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%"
+            + (f"<br>⬇ 최초입고 {stock_info['최초입고']:,}일 경과 -{demote_steps}등급" if demote_steps else "")
+            + "</span></div>",
             unsafe_allow_html=True)
     else:
         st.caption("등급 산출 불가")
@@ -417,7 +449,8 @@ with cols[4]:
             f"총입고 <b>{stock_info['총입고량']:,}개</b><br>"
             f"현재고 <b>{stock_info['현재고']:,}개</b><br>"
             f"회전율(판매÷입고) <b>{_t:.1%}</b><br>".replace("nan%", "-")
-            + (f"최근입고 <b>{int(_r)}일 전</b>" if pd.notna(_r) else "최근입고 <b>-</b>")
+            + (f"최근입고 <b>{int(_r)}일 전</b><br>" if pd.notna(_r) else "최근입고 <b>-</b><br>")
+            + (f"최초입고 <b>{stock_info['최초입고']}일 전</b>" if stock_info.get("최초입고") is not None else "최초입고 <b>-</b>")
             + "</div>", unsafe_allow_html=True)
     else:
         st.caption("재고 데이터 없음")
