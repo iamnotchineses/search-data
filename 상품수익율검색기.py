@@ -64,7 +64,7 @@ st.set_page_config(page_title="상품 수익율 검색기", page_icon="🔍", la
 # 비밀번호 잠금
 # ──────────────────────────────────────────────
 # 평문 대신 SHA-256 해시만 보관 (저장소에 비밀번호가 그대로 남지 않도록)
-PASSWORD_SHA256 = "c356b589ca5af32ef0049f110a6c82d03f78b7a791bc85eda9e1793b72bd86ee"
+PASSWORD_SHA256 = "d7eb0880f7793fb66fc12fc495b3236aecfa86271a7a474d95ea5a92c9ad0d0f"
 
 
 def _password_ok(pw: str) -> bool:
@@ -145,8 +145,20 @@ def load_store_malls(sig) -> frozenset:
                      .dropna().astype(str).str.strip())
 
 
+def _is_sales_parquet(path: str) -> bool:
+    """스키마에 주문번호·출고날짜가 있으면 매출 데이터로 인식"""
+    try:
+        import pyarrow.parquet as pq
+        cols = set(pq.ParquetFile(path).schema_arrow.names)
+        return {"주문번호", "출고날짜", "쇼핑몰"} <= cols
+    except Exception:
+        return False
+
+
 def get_file_sigs():
-    pq_files = sorted(glob.glob(RAW_PATTERN_PQ))
+    # parquet: 파일명 무관, 스키마로 매출 데이터 판별 (재고.parquet 등은 자동 제외)
+    pq_files = [f for f in sorted(glob.glob(os.path.join(BASE_DIR, "*.parquet")))
+                if _is_sales_parquet(f)]
     pq_bases = {os.path.splitext(os.path.basename(f))[0] for f in pq_files}
     xlsx_files = [f for f in sorted(glob.glob(RAW_PATTERN_XLSX))
                   if os.path.splitext(os.path.basename(f))[0] not in pq_bases
