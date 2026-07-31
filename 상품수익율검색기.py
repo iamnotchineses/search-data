@@ -342,10 +342,14 @@ if stock_df is not None:
     s_hit = stock_df[smask]
     if not s_hit.empty:
         _qty = int(s_hit["수량"].sum())
-        _inb = int(s_hit["총입고량"].sum())
-        _sold = max(_inb - _qty, 0)
+        _inb_hist = int(s_hit["총입고량"].sum())
+        # 입고이력은 최근 3회까지만 기록되어 과소 집계됨
+        # → 실제 판매수량 + 현재고로 하한을 보정
+        _sold = int(hit[COL_QTY].sum())
+        _inb = max(_inb_hist, _sold + _qty)
         stock_info = {
-            "현재고": _qty, "총입고량": _inb,
+            "현재고": _qty, "총입고량": _inb, "판매량": _sold,
+            "입고추정": _inb > _inb_hist,
             "회전율": (_sold / _inb) if _inb else None,
             "최근입고": s_hit["입고경과일"].min(),
         }
@@ -463,12 +467,17 @@ with cols[4]:
         _r = stock_info["최근입고"]
         st.markdown(
             "<div style='font-size:0.85rem;line-height:1.7;border-top:1px solid #e6e6e6;padding-top:0.35rem'>"
-            f"총입고 <b>{stock_info['총입고량']:,}개</b><br>"
+            f"총입고 <b>{stock_info['총입고량']:,}개</b>"
+            + ("<span style='color:#999'>*</span>" if stock_info.get("입고추정") else "")
+            + "<br>"
+            f"판매 <b>{stock_info['판매량']:,}개</b><br>"
             f"현재고 <b>{stock_info['현재고']:,}개</b><br>"
             f"회전율(판매÷입고) <b>{_t:.1%}</b><br>".replace("nan%", "-")
             + (f"최근입고 <b>{int(_r)}일 전</b>" if pd.notna(_r) else "최근입고 <b>-</b>")
             + (f"<br>✅ 완판까지 <b>{stock_info['완판일수']:,}일</b>"
                if stock_info.get("완판일수") is not None else "")
+            + ("<br><span style='color:#999;font-size:0.75rem'>* 입고이력 누락분 보정(판매+재고)</span>"
+               if stock_info.get("입고추정") else "")
             + "</div>", unsafe_allow_html=True)
     else:
         st.caption("재고 데이터 없음")
