@@ -64,7 +64,7 @@ st.set_page_config(page_title="상품 수익율 검색기", page_icon="🔍", la
 # 비밀번호 잠금
 # ──────────────────────────────────────────────
 # 평문 대신 SHA-256 해시만 보관 (저장소에 비밀번호가 그대로 남지 않도록)
-PASSWORD_SHA256 = "d7eb0880f7793fb66fc12fc495b3236aecfa86271a7a474d95ea5a92c9ad0d0f"
+PASSWORD_SHA256 = "c356b589ca5af32ef0049f110a6c82d03f78b7a791bc85eda9e1793b72bd86ee"
 
 
 def _password_ok(pw: str) -> bool:
