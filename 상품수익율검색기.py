@@ -784,6 +784,77 @@ for col, yr in zip(sum_cols, years):
 
 st.divider()
 
+# ──────────────────────────────────────────────
+# 이미지 없는 라인명 내려받기
+# ──────────────────────────────────────────────
+st.subheader("🖼 이미지 없는 라인명")
+
+
+@st.cache_data(show_spinner=False)
+def 이미지없는_라인명(stock_sig, image_sig) -> pd.DataFrame:
+    """재고에는 있는데 이미지 표에 모델명이 하나도 없는 라인명."""
+    s = load_stock(stock_sig)
+    m = load_images(image_sig)
+    if s is None or not m or "라인명" not in s.columns:
+        return pd.DataFrame()
+
+    s = s.copy()
+    s["_있음"] = s["모델명"].astype(str).str.strip().str.upper().isin(m.keys())
+
+    있는열 = [c for c in ("브랜드", "대카테고리", "카테고리", "종류", "성별") if c in s.columns]
+    집계 = {"모델수": ("모델명", "nunique"),
+           "이미지있는모델": ("_있음", "sum"),
+           "재고수량": ("수량", "sum"),
+           "가용수량": ("가용수량", "sum"),
+           "모델명": ("모델명", lambda x: ", ".join(sorted(set(map(str, x)))))}
+    for c in 있는열:
+        집계[c] = (c, "first")
+
+    g = (s.dropna(subset=["라인명"])
+         .groupby("라인명", observed=True).agg(**집계).reset_index())
+
+    없음 = g[g["이미지있는모델"] == 0].drop(columns=["이미지있는모델"])
+    순서 = ["라인명"] + 있는열 + ["모델수", "재고수량", "가용수량", "모델명"]
+    return (없음[순서]
+            .sort_values(["가용수량", "라인명"], ascending=[False, True])
+            .reset_index(drop=True))
+
+
+_없음 = 이미지없는_라인명(get_stock_sig(), get_image_sig())
+
+if _없음.empty:
+    if img_map is None:
+        st.caption("이미지 파일이 없어 확인할 수 없습니다. (이미지.parquet 또는 이미지.xlsx 필요)")
+    elif stock_df is None:
+        st.caption("재고 파일이 없어 확인할 수 없습니다.")
+    else:
+        st.success("이미지가 없는 라인명이 없습니다.")
+else:
+    _재고있음 = int((_없음["가용수량"] > 0).sum())
+    st.caption(f"재고 기준 **{len(_없음):,}개** 라인명에 이미지가 없습니다 "
+               f"(그중 가용재고 있는 것 {_재고있음:,}개). 가용수량 많은 순으로 정렬했습니다.")
+
+    _날짜 = pd.Timestamp.today().strftime("%Y%m%d")
+    if stock_df is not None and "기준일" in stock_df.columns and len(stock_df):
+        try:
+            _날짜 = pd.Timestamp(stock_df["기준일"].iloc[0]).strftime("%Y%m%d")
+        except Exception:
+            pass
+
+    # utf-8-sig: BOM 을 붙여야 엑셀에서 한글이 안 깨진다
+    st.download_button(
+        f"⬇ 이미지 없는 라인명 {len(_없음):,}개 내려받기 (CSV)",
+        data=_없음.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"이미지없는_라인명_{_날짜}.csv",
+        mime="text/csv",
+    )
+    st.dataframe(_없음.head(200), hide_index=True,
+                 column_config={"모델수": NUM, "재고수량": NUM, "가용수량": NUM})
+    if len(_없음) > 200:
+        st.caption(f"화면에는 상위 200개만 표시됩니다. 전체 {len(_없음):,}개는 CSV로 받으세요.")
+
+st.divider()
+
 # ── 주문건별 상세 ──
 st.subheader("주문건별 상세")
 
