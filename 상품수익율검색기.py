@@ -389,6 +389,8 @@ GRADE_N = 100        # 1순위 기준 건수
 GRADE_MONTHS = 3     # 2순위 기간(개월)
 GRADE_RATIO = 0.5    # 3순위 비율
 
+TURN_MONTHS = 6      # 회전율 기준 기간(개월). 묵은 재고가 있으면 그만큼 늘어남
+
 _g_pool = (hit[hit["연도"].isin([2024, 2025, 2026])]
            .sort_values(COL_DATE, ascending=False))
 # '지금'은 실행 시각이 아니라 데이터의 마지막 출고일로 본다
@@ -458,6 +460,37 @@ if stock_df is not None:
                 if row_days is not None:
                     oldest_days = row_days if oldest_days is None else max(oldest_days, row_days)
         stock_info["최초입고"] = oldest_days
+
+        # ── 회전율: 최근 6개월 기준 ────────────────────────────
+        # 전 기간으로 재면 몇 년 전에 잘 팔린 실적이 지금 안 팔리는 상태를 가려버린다.
+        # 다만 6개월만 딱 끊으면 그 전에 들어와 아직도 안 나간 재고가 분모에서 빠져
+        # 오히려 회전율이 좋아 보인다. → 묵은 재고가 남아 있으면 그 입고 시점까지 늘린다.
+        _기준일 = pd.Timestamp(s_hit["기준일"].iloc[0]) if "기준일" in s_hit.columns else None
+        if _기준일 is None or pd.isna(_기준일):
+            _기준일 = df[COL_DATE].max()
+        _창일수 = (_기준일 - (_기준일 - pd.DateOffset(months=TURN_MONTHS))).days
+        if oldest_days and oldest_days > _창일수:
+            _창일수 = int(oldest_days)          # 잔여재고가 들어온 날까지 소급
+        _창시작 = _기준일 - pd.Timedelta(days=_창일수)
+
+        _sold_win = int(hit.loc[hit[COL_DATE] >= _창시작, COL_QTY].sum())
+        _inb_win = 0
+        for _, r in s_hit.iterrows():
+            for d_, q_ in _RX_IN.findall(str(r["입고이력"]).replace(",", "")):
+                if int(d_) <= _창일수:
+                    _inb_win += int(q_)
+        # 입고이력은 최근 3회까지만 남아 과소 집계된다.
+        # 기간이 잔여재고 입고일까지 걸쳐 있으므로 '기간 판매 + 현재고'가 입고량의 하한.
+        _inb_win_adj = max(_inb_win, _sold_win + _qty)
+        stock_info.update({
+            "회전율": (_sold_win / _inb_win_adj) if _inb_win_adj else None,
+            "회전기간일": _창일수,
+            "회전기간연장": bool(oldest_days and oldest_days > (
+                _기준일 - (_기준일 - pd.DateOffset(months=TURN_MONTHS))).days),
+            "기간판매": _sold_win,
+            "기간입고": _inb_win_adj,
+            "기간입고추정": _inb_win_adj > _inb_win,
+        })
 
         # 완판(현재고 0) 상품: 최초 입고 → 마지막 판매까지 소요 기간
         stock_info["완판일수"] = None
@@ -547,6 +580,9 @@ with cols[4]:
     if stock_info:
         _t = stock_info["회전율"]
         _r = stock_info["최근입고"]
+        _turn_label = (f"최근 {TURN_MONTHS}개월"
+                       if not stock_info.get("회전기간연장")
+                       else f"최근 {stock_info['회전기간일'] / 30:.0f}개월 · 묵은재고 입고시점까지")
         st.markdown(
             "<div style='font-size:0.85rem;line-height:1.7;border-top:1px solid #e6e6e6;padding-top:0.35rem'>"
             f"총입고 <b>{stock_info['총입고량']:,}개</b>"
@@ -554,7 +590,11 @@ with cols[4]:
             + "<br>"
             f"판매 <b>{stock_info['판매량']:,}개</b><br>"
             f"현재고 <b>{stock_info['현재고']:,}개</b><br>"
-            f"회전율(판매÷입고) <b>{_t:.1%}</b><br>".replace("nan%", "-")
+            + (f"회전율(판매÷입고) <b>{_t:.1%}</b>" if _t is not None and pd.notna(_t)
+               else "회전율(판매÷입고) <b>-</b>")
+            + f" <span style='color:#999;font-size:0.75rem'>({_turn_label})</span><br>"
+            + f"<span style='color:#999;font-size:0.75rem'>└ 기간 판매 {stock_info['기간판매']:,}"
+              f" ÷ 입고 {stock_info['기간입고']:,}</span><br>"
             + (f"최근입고 <b>{int(_r)}일 전</b>" if pd.notna(_r) else "최근입고 <b>-</b>")
             + (f"<br>✅ 완판까지 <b>{stock_info['완판일수']:,}일</b>"
                if stock_info.get("완판일수") is not None else "")
