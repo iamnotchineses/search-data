@@ -198,6 +198,40 @@ def _이미지주소(url: str) -> str:
     return quote(url, safe=":/?&=%#")
 
 
+_RX_SIZE = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _이미지키들(이름):
+    """이미지 표를 찾을 때 시도할 이름들.
+
+    이미지 표는 사이즈가 빠진 '라인명' 기준이다.
+    (예: 표에는 '10AW220 8507', 재고·매출에는 '10AW220 8507 (40)')
+    그래서 원래 이름 → 사이즈 괄호를 뗀 이름 순으로 찾는다.
+    """
+    if 이름 is None or (isinstance(이름, float) and pd.isna(이름)):
+        return []
+    원본 = str(이름).strip().upper()
+    if not 원본:
+        return []
+    벗김 = _RX_SIZE.sub("", 원본).strip()
+    return [원본] if 벗김 == 원본 else [원본, 벗김]
+
+
+def _이미지찾기(img_map, 후보들):
+    if not img_map:
+        return None
+    본것 = set()
+    for c in 후보들:
+        for k in _이미지키들(c):
+            if k in 본것:
+                continue
+            본것.add(k)
+            u = img_map.get(k)
+            if u:
+                return u
+    return None
+
+
 def get_mall_class_sig():
     files = sorted(glob.glob(MALL_CLASS_PATTERN))
     if not files:
@@ -477,6 +511,8 @@ if stock_df is not None:
         _sold = int(hit[COL_QTY].sum())
         _inb = max(_inb_hist, _sold + _qty)
         stock_info = {
+            "라인명들": (sorted(set(s_hit["라인명"].dropna().astype(str)))
+                     if "라인명" in s_hit.columns else []),
             "현재고": _qty, "총입고량": _inb, "판매량": _sold,
             "입고추정": _inb > _inb_hist,
             "회전율": (_sold / _inb) if _inb else None,
@@ -590,14 +626,11 @@ periods = [("최근 3개년", hit[hit["연도"].isin(years)])]
 periods += [(f"{y}년", hit[hit["연도"] == y]) for y in years]
 
 # 26년 칸과 상품등급 칸 사이에 상품 이미지
+# 검색된 모델명 → (사이즈 뗀 이름) → 재고에서 찾은 라인명 순으로 이미지를 찾는다
 img_map = load_images(get_image_sig())
-img_url = None
-if img_map:
-    for _md in matched:
-        _u = img_map.get(str(_md).strip().upper())
-        if _u:
-            img_url = _이미지주소(_u)
-            break
+_img_후보 = list(matched) + list(stock_info.get("라인명들", []) if stock_info else [])
+_u = _이미지찾기(img_map, _img_후보)
+img_url = _이미지주소(_u) if _u else None
 
 cols = st.columns([1, 1, 1, 1, 0.85, 1.25])
 for col, (label, sub) in zip(cols, periods):
@@ -799,7 +832,13 @@ def 이미지없는_라인명(stock_sig, image_sig) -> pd.DataFrame:
         return pd.DataFrame()
 
     s = s.copy()
-    s["_있음"] = s["모델명"].astype(str).str.strip().str.upper().isin(m.keys())
+    # 이미지 표는 라인명(사이즈 없는 이름) 기준이라 모델명만으로 찾으면 대부분 놓친다.
+    # 모델명 · 사이즈 뗀 모델명 · 라인명 중 하나라도 있으면 '이미지 있음'.
+    키 = set(m.keys())
+    _m = s["모델명"].astype(str).str.strip().str.upper()
+    _l = s["라인명"].astype(str).str.strip().str.upper()
+    _b = _m.str.replace(_RX_SIZE, "", regex=True).str.strip()
+    s["_있음"] = _m.isin(키) | _b.isin(키) | _l.isin(키)
 
     있는열 = [c for c in ("브랜드", "대카테고리", "카테고리", "종류", "성별") if c in s.columns]
     집계 = {"모델수": ("모델명", "nunique"),
