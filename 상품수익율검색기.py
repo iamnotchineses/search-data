@@ -572,11 +572,26 @@ with cols[4]:
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
             f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%"
             + (f" <span style='color:#999'>({g_n:,}건)</span>" if g_n < GRADE_N else "")
-            + (f"<br>⬇ 최초입고 {stock_info['최초입고']:,}일 경과 -{demote_steps}등급" if demote_steps else "")
             + "</span></div>",
             unsafe_allow_html=True)
     else:
         st.caption("등급 산출 불가")
+
+    # 가장 오래된 잔여재고의 입고 경과일 — 강등 여부와 무관하게 항상 보여준다
+    # (등급이 좋아도 재고가 묵고 있으면 바로 눈에 띄어야 하므로)
+    if stock_info:
+        _old = stock_info.get("최초입고")
+        if _old is None:
+            _old_txt = "<span style='color:#999'>잔여재고 없음</span>"
+        else:
+            _old_col = "#cf222e" if _old >= 300 else ("#bf8700" if _old >= 180 else "#666")
+            _old_txt = (f"<span style='color:{_old_col};font-weight:700'>{int(_old):,}일</span> 경과"
+                        + (f" <span style='color:#cf222e'>⬇ -{demote_steps}등급</span>"
+                           if demote_steps else ""))
+        st.markdown(
+            "<div style='font-size:0.8rem;color:#666;margin-top:-0.25rem;margin-bottom:0.35rem'>"
+            f"가장 오래된 재고 {_old_txt}</div>", unsafe_allow_html=True)
+
     if stock_info:
         _t = stock_info["회전율"]
         _r = stock_info["최근입고"]
