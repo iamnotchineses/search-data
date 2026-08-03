@@ -150,6 +150,54 @@ def get_stock_sig():
     return (경로, int(os.path.getmtime(경로)))
 
 
+def _이미지파일():
+    """모델명 → 이미지 URL 표를 찾는다. parquet 우선(가볍고 빠름), 없으면 xlsx.
+
+    저장소에는 .gitignore 가 xlsx 를 막고 있어 parquet 만 올라간다.
+    로컬에서 이미지.xlsx 만 갱신했을 때도 그대로 뜨도록 xlsx 도 받아준다.
+    """
+    후보 = [f for 확장자 in ("parquet", "xlsx")
+           for f in _찾기(확장자) if "이미지" in os.path.basename(f)]
+    if not 후보:
+        return None
+    # 더 최근에 갱신된 쪽을 쓴다. xlsx 를 새로 받아 놓고 parquet 을 안 만들었어도
+    # 바로 반영되도록. (같은 시각이면 가벼운 parquet 우선)
+    return max(후보, key=lambda f: (os.path.getmtime(f), f.lower().endswith(".parquet")))
+
+
+def get_image_sig():
+    경로 = _이미지파일()
+    if 경로 is None:
+        return None
+    return (경로, int(os.path.getmtime(경로)))
+
+
+@st.cache_data(show_spinner=False)
+def load_images(sig):
+    if sig is None:
+        return None
+    경로 = sig[0]
+    try:
+        if 경로.lower().endswith(".parquet"):
+            m = pd.read_parquet(경로)
+        else:
+            m = pd.read_excel(경로, sheet_name="이미지")
+        m.columns = [str(c).strip() for c in m.columns]
+        if "모델명" not in m.columns or "이미지" not in m.columns:
+            return None
+        m = m[["모델명", "이미지"]].dropna()
+        키 = m["모델명"].astype(str).str.strip().str.upper()
+        return dict(zip(키, m["이미지"].astype(str).str.strip()))
+    except Exception:
+        return None
+
+
+def _이미지주소(url: str) -> str:
+    """URL에 공백이 들어 있어 (예: '.../A1050186 868.jpg') 그대로 쓰면 깨질 수 있다."""
+    from urllib.parse import quote
+    return quote(url, safe=":/?&=%#")
+
+
 def get_mall_class_sig():
     files = sorted(glob.glob(MALL_CLASS_PATTERN))
     if not files:
@@ -541,7 +589,17 @@ years = [2024, 2025, 2026]
 periods = [("최근 3개년", hit[hit["연도"].isin(years)])]
 periods += [(f"{y}년", hit[hit["연도"] == y]) for y in years]
 
-cols = st.columns(5)
+# 26년 칸과 상품등급 칸 사이에 상품 이미지
+img_map = load_images(get_image_sig())
+img_url = None
+if img_map:
+    for _md in matched:
+        _u = img_map.get(str(_md).strip().upper())
+        if _u:
+            img_url = _이미지주소(_u)
+            break
+
+cols = st.columns([1, 1, 1, 1, 0.85, 1.25])
 for col, (label, sub) in zip(cols, periods):
     s = agg_stats(sub)
     with col:
@@ -563,6 +621,18 @@ for col, (label, sub) in zip(cols, periods):
             st.metric("평균 정산금", "-")
 
 with cols[4]:
+    st.markdown("**상품 이미지**")
+    if img_url:
+        try:
+            st.image(img_url, width="stretch")
+        except Exception:
+            st.caption("이미지를 불러오지 못했습니다")
+    elif img_map:
+        st.caption("이미지 없음")
+    else:
+        st.caption("이미지 파일 없음")
+
+with cols[5]:
     # 등급은 전체 기간이 아니라 최근 GRADE_N건으로만 매긴다 (예전 실적에 묻히지 않도록)
     st.markdown(f"**상품등급** <span style='font-size:0.78rem;color:#888;font-weight:400'>"
                 f"({g_basis} 기준)</span>", unsafe_allow_html=True)
