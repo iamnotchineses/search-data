@@ -31,25 +31,11 @@ import streamlit as st
 # 설정
 # ──────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 데이터는 저장소 루트든 하위 폴더(data/ 등)든 어디에 있어도 찾는다.
-# 파일명도 한글·영문 상관없다 (매출 여부는 파일명이 아니라 컬럼 구성으로 판별).
-SEARCH_GLOBS = ("*.{ext}", "*/*.{ext}")
+RAW_PATTERN_XLSX = os.path.join(BASE_DIR, "*매출*.xlsx")
+RAW_PATTERN_PQ = os.path.join(BASE_DIR, "*매출*.parquet")
 MALL_CLASS_PATTERN = os.path.join(BASE_DIR, "*몰분류*.xlsx")   # 분류=매장 → 통계 제외
-STOCK_NAME = "재고.parquet"                                     # 변환기가 생성
+STOCK_FILE = os.path.join(BASE_DIR, "재고.parquet")             # 변환기가 생성
 CACHE_DIR = os.path.join(BASE_DIR, "_cache")
-
-
-def _찾기(확장자):
-    """루트와 바로 아래 하위 폴더에서 해당 확장자 파일을 모은다."""
-    나온것 = []
-    for 틀 in SEARCH_GLOBS:
-        for f in glob.glob(os.path.join(BASE_DIR, 틀.format(ext=확장자))):
-            if os.path.basename(f).startswith("~$"):
-                continue
-            if os.path.abspath(os.path.dirname(f)) == os.path.abspath(CACHE_DIR):
-                continue                                  # 변환 캐시는 제외
-            나온것.append(f)
-    return sorted(set(나온것))
 
 HEADER_ROW = 1   # 헤더가 2번째 행
 SHEET_NAME = 0   # 첫 번째 시트
@@ -126,28 +112,19 @@ h3 { font-size: 1.15rem !important; }
 # ──────────────────────────────────────────────
 # 데이터 로딩
 # ──────────────────────────────────────────────
-def _재고파일():
-    """재고.parquet 을 루트·하위 폴더에서 찾는다. 여러 개면 가장 최근 것."""
-    후보 = [f for f in _찾기("parquet") if os.path.basename(f) == STOCK_NAME]
-    if not 후보:
-        return None
-    return max(후보, key=os.path.getmtime)
-
-
 @st.cache_data(show_spinner=False)
 def load_stock(sig):
     if sig is None:
         return None
-    df = pd.read_parquet(sig[0])
+    df = pd.read_parquet(STOCK_FILE)
     df["모델명_U"] = df["모델명"].astype(str).str.upper()
     return df
 
 
 def get_stock_sig():
-    경로 = _재고파일()
-    if 경로 is None:
+    if not os.path.exists(STOCK_FILE):
         return None
-    return (경로, int(os.path.getmtime(경로)))
+    return int(os.path.getmtime(STOCK_FILE))
 
 
 def get_mall_class_sig():
@@ -179,12 +156,13 @@ def _is_sales_parquet(path: str) -> bool:
 
 
 def get_file_sigs():
-    # parquet: 파일명·폴더 무관, 스키마로 매출 데이터 판별 (재고.parquet 등은 자동 제외)
-    pq_files = [f for f in _찾기("parquet") if _is_sales_parquet(f)]
+    # parquet: 파일명 무관, 스키마로 매출 데이터 판별 (재고.parquet 등은 자동 제외)
+    pq_files = [f for f in sorted(glob.glob(os.path.join(BASE_DIR, "*.parquet")))
+                if _is_sales_parquet(f)]
     pq_bases = {os.path.splitext(os.path.basename(f))[0] for f in pq_files}
-    xlsx_files = [f for f in _찾기("xlsx")
-                  if "매출" in os.path.basename(f)
-                  and os.path.splitext(os.path.basename(f))[0] not in pq_bases]
+    xlsx_files = [f for f in sorted(glob.glob(RAW_PATTERN_XLSX))
+                  if os.path.splitext(os.path.basename(f))[0] not in pq_bases
+                  and not os.path.basename(f).startswith("~$")]
     files = pq_files + xlsx_files
     return tuple((f, int(os.path.getmtime(f))) for f in files)
 
@@ -220,36 +198,11 @@ def _read_one(path: str) -> pd.DataFrame:
     return df
 
 
-def _키해시(df: pd.DataFrame):
-    """주문번호+모델명을 64비트 숫자로. (문자열을 그대로 들고 있으면 메모리를 크게 먹는다)"""
-    키 = df[COL_ORDER].astype(str) + "\x00" + df[COL_MODEL].astype(str)
-    return pd.util.hash_pandas_object(키, index=False).to_numpy()
-
-
 @st.cache_data(show_spinner="데이터 불러오는 중...")
 def load_all_data(file_sigs: tuple, mall_sig=None) -> pd.DataFrame:
-    # 파일끼리 겹치는 구간이 있다 (연도 파일의 자투리, 월별 파일과 지난 스냅샷 등).
-    # 그냥 이어붙이면 같은 주문이 두 번 잡혀 매출이 부풀려진다.
-    # → 최근에 갱신된 파일부터 읽고, 앞서 나온 주문번호+모델명은 버린다.
-    #   (같은 파일 안의 중복은 정상 데이터일 수 있으므로 건드리지 않는다)
-    순서 = sorted(file_sigs, key=lambda x: x[1], reverse=True)
-
-    frames, 본키 = [], np.empty(0, dtype=np.uint64)
-    버린수 = 0
-    for 경로, _ in 순서:
-        조각 = _read_one(경로)
-        if COL_ORDER in 조각.columns and COL_MODEL in 조각.columns:
-            해시 = _키해시(조각)
-            겹침 = np.isin(해시, 본키)
-            if 겹침.any():
-                버린수 += int(겹침.sum())
-                조각 = 조각[~겹침]
-                해시 = 해시[~겹침]
-            본키 = np.union1d(본키, 해시)
-        frames.append(조각)
-
+    frames = [_read_one(p) for p, _ in file_sigs]
     df = pd.concat(frames, ignore_index=True)
-    del frames, 본키
+    del frames
 
     # 필수 컬럼 확인
     missing = [c for c in (COL_ORDER, COL_MODEL, COL_QTY, COL_COST,
@@ -292,9 +245,7 @@ def load_all_data(file_sigs: tuple, mall_sig=None) -> pd.DataFrame:
     df["수익율"] = (df[COL_PROFIT] / df[COL_PRICE] * 100).astype("float32")
     df["정산금"] = (df[COL_COST] + df[COL_PROFIT]).astype("float32")
 
-    out = df.reset_index(drop=True)
-    out.attrs["중복제거"] = 버린수
-    return out
+    return df.reset_index(drop=True)
 
 
 # ──────────────────────────────────────────────
@@ -333,10 +284,9 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-st.caption("데이터: " + ", ".join(os.path.relpath(f, BASE_DIR) for f, _ in file_sigs)
+st.caption("데이터: " + ", ".join(os.path.basename(f) for f, _ in file_sigs)
            + f" · {len(df):,}건 · 반품·0원 행"
            + (" · 매장(오프라인) 판매" if mall_sig else "")
-           + (f" · 파일 간 중복 {df.attrs.get('중복제거', 0):,}건" if df.attrs.get("중복제거") else "")
            + " 제외 · 수익율 = 수익(실배송비) ÷ 판매가 · 정산금 = 원가 + 수익")
 if mall_sig is None:
     st.warning("몰분류 파일(*몰분류*.xlsx)이 없어 매장(오프라인) 판매가 제외되지 않았습니다.")
@@ -379,7 +329,11 @@ def grade_of(sub: pd.DataFrame):
             return (gr, color), rate
     return ("E", "#cf222e"), rate
 
-g_res, g_rate = grade_of(hit[hit["연도"].isin([2024, 2025, 2026])])
+GRADE_N = 100   # 등급 산출 기준 최근 주문 건수
+_g_base = (hit[hit["연도"].isin([2024, 2025, 2026])]
+           .sort_values(COL_DATE, ascending=False).head(GRADE_N))
+g_res, g_rate = grade_of(_g_base)
+g_n = len(_g_base)
 
 # ── 재고 매칭 (등급 밑 표시 + 연도별 입고 역산) ──
 _RX_IN = re.compile(r"(\d+)일전/(\d+)")
@@ -506,7 +460,8 @@ with cols[4]:
         st.markdown(
             f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
-            f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%"
+            f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}% "
+            f"(최근 {g_n:,}건 기준)"
             + (f"<br>⬇ 최초입고 {stock_info['최초입고']:,}일 경과 -{demote_steps}등급" if demote_steps else "")
             + "</span></div>",
             unsafe_allow_html=True)
