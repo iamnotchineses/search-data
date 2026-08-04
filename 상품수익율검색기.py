@@ -614,13 +614,17 @@ st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 ·
 # ── 상단 KPI ──
 def agg_stats(sub: pd.DataFrame) -> dict:
     if sub.empty:
-        return {"수량": 0, "수익율": None, "평균정산금": None}
+        return {"수량": 0, "수익율": None, "평균정산금": None, "이익율": None}
     sales = sub[COL_PRICE].sum()
     profit = sub[COL_PROFIT].sum()
+    settle = sub["정산금"].sum()
     qty = sub[COL_QTY].sum()
     return {"수량": int(qty),
+            # 수익율 = 수익 ÷ 판매가   (고객이 낸 돈 대비)
             "수익율": (profit / sales * 100) if sales else None,
-            "평균정산금": (sub["정산금"].sum() / qty) if qty else None}
+            # 이익율 = 수익 ÷ 정산금   (실제로 우리 손에 들어온 돈 대비, 상품등급과 같은 산식)
+            "이익율": (profit / settle * 100) if settle else None,
+            "평균정산금": (settle / qty) if qty else None}
 
 
 years = [2024, 2025, 2026]
@@ -648,12 +652,21 @@ for col, (label, sub) in zip(cols, periods):
             st.markdown(f"**{label}**")
             st.caption(f"{inb_label} {inb_txt}개 / 판매 {s['수량']:,}개")
             st.metric("평균 수익율", fmt_pct(s["수익율"]))
-            st.metric("평균 정산금", fmt_won(s["평균정산금"]))
+            _m1, _m2 = st.columns(2)
+            with _m1:
+                st.metric("평균 정산금", fmt_won(s["평균정산금"]))
+            with _m2:
+                # 상품등급과 같은 산식 (수익 ÷ 정산금)
+                st.metric("이익율", fmt_pct(s["이익율"]))
         else:
             st.markdown(f"**{label}**")
             st.caption(f"{inb_label} {inb_txt}개 / 판매 0개")
             st.metric("평균 수익율", "-")
-            st.metric("평균 정산금", "-")
+            _m1, _m2 = st.columns(2)
+            with _m1:
+                st.metric("평균 정산금", "-")
+            with _m2:
+                st.metric("이익율", "-")
 
 with cols[4]:
     st.markdown("**상품 이미지**")
@@ -983,7 +996,3 @@ else:
         file_name=f"이미지없는_라인명_{_날짜}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    st.dataframe(_없음.head(200), hide_index=True,
-                 column_config={"모델수": NUM, "재고수량": NUM, "가용수량": NUM})
-    if len(_없음) > 200:
-        st.caption(f"화면에는 상위 200개만 표시됩니다. 전체 {len(_없음):,}개는 위 버튼으로 받으세요.")
