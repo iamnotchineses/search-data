@@ -181,7 +181,9 @@ def load_images(sig):
         if 경로.lower().endswith(".parquet"):
             m = pd.read_parquet(경로)
         else:
-            m = pd.read_excel(경로, sheet_name="이미지")
+            # dtype=str: 모델명이 숫자로만 되어 있으면 590728 이 590728.0 으로
+            # 읽혀 매칭이 통째로 어긋난다. 앞자리 0 도 날아간다.
+            m = pd.read_excel(경로, sheet_name="이미지", dtype=str)
         m.columns = [str(c).strip() for c in m.columns]
         if "모델명" not in m.columns or "이미지" not in m.columns:
             return None
@@ -868,6 +870,50 @@ st.subheader("🖼 이미지 없는 라인명")
 # 사은품·쇼핑백·PR(홍보용)은 원래 상품 이미지가 없는 것이 정상이라 목록에서 뺀다
 IMG_SKIP_BRANDS = {"사은품", "쇼핑백", "PR"}
 
+# 코드성 컬럼. 엑셀에서 '텍스트' 서식으로 넣어야 값이 안 망가진다.
+#   710548524014 → 7.10548E+11 로 바뀌고, 앞자리 0 은 그냥 사라진다.
+TEXT_COLS = ("라인명", "브랜드", "대카테고리", "카테고리", "종류", "성별", "모델명")
+
+
+@st.cache_data(show_spinner=False)
+def _엑셀바이트(df: pd.DataFrame, 시트명: str) -> bytes:
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 시트명
+
+    ws.append(list(df.columns))
+    for 칸 in ws[1]:
+        칸.font = Font(bold=True)
+        칸.alignment = Alignment(horizontal="center")
+
+    for 행 in df.itertuples(index=False):
+        ws.append(["" if pd.isna(v) else v for v in 행])
+
+    최대너비 = {"모델명": 60, "라인명": 28}
+    for i, 이름 in enumerate(df.columns, start=1):
+        문자 = get_column_letter(i)
+        코드칸 = 이름 in TEXT_COLS
+        if 코드칸:
+            for 칸 in ws[문자][1:]:          # 머리글 제외
+                칸.number_format = "@"       # 텍스트
+        else:
+            for 칸 in ws[문자][1:]:
+                칸.number_format = "#,##0"
+        길이 = max([len(str(이름))] + [len(str(v)) for v in df[이름].head(300)])
+        ws.column_dimensions[문자].width = min(길이 + 2, 최대너비.get(이름, 20))
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
 
 @st.cache_data(show_spinner=False)
 def 이미지없는_라인명(stock_sig, image_sig) -> pd.DataFrame:
@@ -929,14 +975,15 @@ else:
         except Exception:
             pass
 
-    # utf-8-sig: BOM 을 붙여야 엑셀에서 한글이 안 깨진다
+    # CSV 대신 xlsx. 코드성 컬럼을 '텍스트' 서식으로 넣어야
+    # 710548524014 같은 값이 지수형으로 바뀌거나 앞자리 0 이 날아가지 않는다.
     st.download_button(
-        f"⬇ 이미지 없는 라인명 {len(_없음):,}개 내려받기 (CSV)",
-        data=_없음.to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"이미지없는_라인명_{_날짜}.csv",
-        mime="text/csv",
+        f"⬇ 이미지 없는 라인명 {len(_없음):,}개 내려받기 (엑셀)",
+        data=_엑셀바이트(_없음, "이미지없는라인명"),
+        file_name=f"이미지없는_라인명_{_날짜}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     st.dataframe(_없음.head(200), hide_index=True,
                  column_config={"모델수": NUM, "재고수량": NUM, "가용수량": NUM})
     if len(_없음) > 200:
-        st.caption(f"화면에는 상위 200개만 표시됩니다. 전체 {len(_없음):,}개는 CSV로 받으세요.")
+        st.caption(f"화면에는 상위 200개만 표시됩니다. 전체 {len(_없음):,}개는 위 버튼으로 받으세요.")
