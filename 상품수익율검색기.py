@@ -396,6 +396,19 @@ WON = st.column_config.NumberColumn(format="localized")
 NUM = st.column_config.NumberColumn(format="localized")
 
 
+def _한줄지표(라벨1, 값1, 라벨2, 값2):
+    """좁은 칸에 지표 두 개를 한 줄로. st.metric 보다 작은 글씨로 찍는다."""
+    st.markdown(
+        "<div style='display:flex;gap:0.9rem;align-items:baseline;flex-wrap:wrap;"
+        "margin:0.15rem 0 0.6rem'>"
+        + "".join(
+            f"<div><div style='font-size:0.72rem;color:#666;line-height:1.2'>{라벨}</div>"
+            f"<div style='font-size:1.02rem;font-weight:600;line-height:1.25'>{값}</div></div>"
+            for 라벨, 값 in ((라벨1, 값1), (라벨2, 값2)))
+        + "</div>",
+        unsafe_allow_html=True)
+
+
 # ──────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────
@@ -652,21 +665,15 @@ for col, (label, sub) in zip(cols, periods):
             st.markdown(f"**{label}**")
             st.caption(f"{inb_label} {inb_txt}개 / 판매 {s['수량']:,}개")
             st.metric("평균 수익율", fmt_pct(s["수익율"]))
-            _m1, _m2 = st.columns(2)
-            with _m1:
-                st.metric("평균 정산금", fmt_won(s["평균정산금"]))
-            with _m2:
-                # 상품등급과 같은 산식 (수익 ÷ 정산금)
-                st.metric("이익율", fmt_pct(s["이익율"]))
+            # 정산금·이익율은 st.metric 두 개를 나란히 놓으면 칸을 넘쳐 글자가 겹친다.
+            # → 한 줄에 작게 (이익율은 상품등급과 같은 산식: 수익 ÷ 정산금)
+            _한줄지표("평균 정산금", fmt_won(s["평균정산금"]),
+                   "이익율", fmt_pct(s["이익율"]))
         else:
             st.markdown(f"**{label}**")
             st.caption(f"{inb_label} {inb_txt}개 / 판매 0개")
             st.metric("평균 수익율", "-")
-            _m1, _m2 = st.columns(2)
-            with _m1:
-                st.metric("평균 정산금", "-")
-            with _m2:
-                st.metric("이익율", "-")
+            _한줄지표("평균 정산금", "-", "이익율", "-")
 
 with cols[4]:
     st.markdown("**상품 이미지**")
