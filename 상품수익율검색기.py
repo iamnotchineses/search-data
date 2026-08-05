@@ -477,15 +477,15 @@ def grade_of(sub: pd.DataFrame):
     return ("E", "#cf222e"), rate
 
 # ── 등급 산출 범위 ────────────────────────────────────
-# 오래된 실적에 묻히지 않도록 최근 것만 본다. 다만 판매가 적으면
-# 최근 것만 잘라 쓸 표본이 안 되므로 아래 순서로 물러선다.
-#   100건 이상   → 최근 100건
-#   10건 미만    → 전체 (자를 만큼 없음. 몇 건을 더 버리면 1~2건으로 등급이 정해진다)
-#   10~99건      → 최근 3개월, 그 사이 판매가 없으면 전체 중 최근 50%
-GRADE_N = 100        # 이 이상이면 최근 N건만
-GRADE_MIN = 10       # 이 미만이면 전체를 쓴다
-GRADE_MONTHS = 3     # 중간 구간의 기간(개월)
-GRADE_RATIO = 0.5    # 그 기간에 판매가 없을 때 쓸 비율
+# 최근 3개월부터 보되, 표본이 얇으면 3개월씩 뒤로 늘려간다.
+#   3개월 → 100건 넘으면 확정
+#   안 되면 6, 9, 12 ... 최대 24개월까지
+#   24개월로도 100건이 안 되면 그 24개월치를 그대로 쓴다
+# 잘 팔리는 상품은 최근 실적만, 드물게 팔리는 상품은 기간을 넓혀
+# 최소한의 표본을 확보하는 방식.
+GRADE_TARGET = 100        # 이 건수를 넘기면 기간 확장을 멈춘다
+GRADE_STEP_MONTHS = 3     # 늘리는 단위(개월)
+GRADE_MAX_MONTHS = 24     # 최대 기간(개월)
 
 TURN_MONTHS = 6      # 회전율 기준 기간(개월). 묵은 재고가 있으면 그만큼 늘어남
 
@@ -495,20 +495,16 @@ _g_pool = (hit[hit["연도"].isin([2024, 2025, 2026])]
 # (파일 갱신이 하루이틀 늦어도 기준이 흔들리지 않게)
 _g_today = df[COL_DATE].max()
 
-if len(_g_pool) >= GRADE_N:
-    _g_base = _g_pool.head(GRADE_N)
-    g_basis = f"최근 {GRADE_N:,}건"
-elif len(_g_pool) < GRADE_MIN:
-    _g_base = _g_pool
-    g_basis = f"전체 {len(_g_pool):,}건"
-else:
-    _g_recent = _g_pool[_g_pool[COL_DATE] >= _g_today - pd.DateOffset(months=GRADE_MONTHS)]
-    if not _g_recent.empty:
-        _g_base = _g_recent
-        g_basis = f"최근 {GRADE_MONTHS}개월"
-    else:
-        _g_base = _g_pool.head(max(1, round(len(_g_pool) * GRADE_RATIO)))
-        g_basis = f"전체 중 최근 {GRADE_RATIO:.0%}"
+_g_base, g_basis = _g_pool, "전체"
+for _개월 in range(GRADE_STEP_MONTHS, GRADE_MAX_MONTHS + 1, GRADE_STEP_MONTHS):
+    _g_base = _g_pool[_g_pool[COL_DATE] >= _g_today - pd.DateOffset(months=_개월)]
+    g_basis = f"최근 {_개월}개월"
+    if len(_g_base) > GRADE_TARGET:
+        break
+
+# 2년간 판매가 아예 없으면 그 기간으로는 등급을 못 매긴다 → 있는 것 전부로
+if _g_base.empty:
+    _g_base, g_basis = _g_pool, f"전체 {len(_g_pool):,}건"
 
 g_res, g_rate = grade_of(_g_base)
 g_n = len(_g_base)
@@ -692,7 +688,7 @@ with cols[4]:
         st.caption("이미지 파일 없음")
 
 with cols[5]:
-    # 등급은 전체 기간이 아니라 최근 GRADE_N건으로만 매긴다 (예전 실적에 묻히지 않도록)
+    # 등급은 최근 실적만 본다. 표본이 얇으면 기간을 3개월씩 늘려 잡는다.
     st.markdown(f"**상품등급** <span style='font-size:0.78rem;color:#888;font-weight:400'>"
                 f"({g_basis} 기준)</span>", unsafe_allow_html=True)
     if g_res:
@@ -700,7 +696,7 @@ with cols[5]:
             f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
             f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%"
-            + (f" <span style='color:#999'>({g_n:,}건)</span>" if g_n < GRADE_N else "")
+            + (f" <span style='color:#999'>({g_n:,}건)</span>" if g_n <= GRADE_TARGET else "")
             + "</span></div>",
             unsafe_allow_html=True)
     else:
