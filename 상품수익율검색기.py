@@ -477,14 +477,15 @@ def grade_of(sub: pd.DataFrame):
     return ("E", "#cf222e"), rate
 
 # ── 등급 산출 범위 ────────────────────────────────────
-# 오래된 실적에 묻히지 않도록 최근 것만 본다. 판매가 적은 상품은
-# 100건을 못 채우므로 아래 순서로 물러선다.
-#   1) 최근 100건            (충분히 팔린 상품)
-#   2) 최근 3개월            (100건은 안 되지만 최근에 팔린 상품)
-#   3) 전체 중 최근 50%      (3개월간 판매가 끊긴 상품)
-GRADE_N = 100        # 1순위 기준 건수
-GRADE_MONTHS = 3     # 2순위 기간(개월)
-GRADE_RATIO = 0.5    # 3순위 비율
+# 오래된 실적에 묻히지 않도록 최근 것만 본다. 다만 판매가 적으면
+# 최근 것만 잘라 쓸 표본이 안 되므로 아래 순서로 물러선다.
+#   100건 이상   → 최근 100건
+#   10건 미만    → 전체 (자를 만큼 없음. 몇 건을 더 버리면 1~2건으로 등급이 정해진다)
+#   10~99건      → 최근 3개월, 그 사이 판매가 없으면 전체 중 최근 50%
+GRADE_N = 100        # 이 이상이면 최근 N건만
+GRADE_MIN = 10       # 이 미만이면 전체를 쓴다
+GRADE_MONTHS = 3     # 중간 구간의 기간(개월)
+GRADE_RATIO = 0.5    # 그 기간에 판매가 없을 때 쓸 비율
 
 TURN_MONTHS = 6      # 회전율 기준 기간(개월). 묵은 재고가 있으면 그만큼 늘어남
 
@@ -497,6 +498,9 @@ _g_today = df[COL_DATE].max()
 if len(_g_pool) >= GRADE_N:
     _g_base = _g_pool.head(GRADE_N)
     g_basis = f"최근 {GRADE_N:,}건"
+elif len(_g_pool) < GRADE_MIN:
+    _g_base = _g_pool
+    g_basis = f"전체 {len(_g_pool):,}건"
 else:
     _g_recent = _g_pool[_g_pool[COL_DATE] >= _g_today - pd.DateOffset(months=GRADE_MONTHS)]
     if not _g_recent.empty:
