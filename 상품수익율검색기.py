@@ -463,6 +463,29 @@ def _엑셀바이트(df: pd.DataFrame, 시트명: str) -> bytes:
     return buf.getvalue()
 
 
+def _행사가정보(s_hit) -> dict:
+    """재고 파일의 EC행사가·수익률·자사몰가. 재고 있는 행만 보고 중앙값을 낸다.
+
+    재고 0 인 행은 행사가가 -100, 0 처럼 정리 안 된 값이라
+    같이 평균 내면 수익률이 수천 %로 튄다.
+    """
+    빈값 = {"EC행사가": None, "EC행사수익률": None, "자사몰행사가": None}
+    if "수량" not in s_hit.columns:
+        return 빈값
+    있는것 = s_hit[pd.to_numeric(s_hit["수량"], errors="coerce").fillna(0) > 0]
+    if 있는것.empty:
+        return 빈값                      # 전부 재고 0 → 표시 안 함
+    결과 = {}
+    for 칸 in 빈값:
+        if 칸 not in 있는것.columns:
+            결과[칸] = None
+            continue
+        값 = pd.to_numeric(있는것[칸], errors="coerce")
+        값 = 값[값 > 0]                   # 음수·0 은 미입력으로 본다
+        결과[칸] = float(값.median()) if len(값) else None
+    return 결과
+
+
 def _행사가표시(info) -> str:
     """재고 파일에 들어 있는 EC행사가·수익률을 재고 칸 아래에 덧붙인다."""
     가 = info.get("EC행사가")
@@ -522,8 +545,10 @@ st.markdown(
     "<span style='color:#bf8700;font-weight:700'>C</span> 5% 이상 · "
     "<span style='color:#d4691e;font-weight:700'>D</span> −5% 이상 · "
     "<span style='color:#cf222e;font-weight:700'>E</span> −5% 미만<br>"
+    "· S 는 이익율 40% 이상 + 판매 20개 이상 + 매출 1,000만원 이상을 모두 만족해야 함<br>"
     "· 기간은 최근 3개월부터, 100건을 넘길 때까지 3개월씩 넓힘 (최대 24개월)<br>"
     "· 매장(오프라인) 판매는 등급·수익율에서 제외 (판매수량·판매금액에는 포함)<br>"
+    "· <b>최근 1년 매출 1억 이상이면 한 등급 상향</b><br>"
     "· 남은 재고 중 가장 오래된 것이 300일 지날 때마다 한 등급씩 강등"
     "</div>", unsafe_allow_html=True)
 if mall_sig is None:
@@ -566,18 +591,28 @@ def 온라인만(sub: pd.DataFrame) -> pd.DataFrame:
 # 상품등급: 이익율(수익 ÷ 정산금) 기준 S~E
 # S 는 이익율만으로 주지 않는다. 몇 개 안 팔린 상품이 이익율만 높아
 # 최고 등급을 받는 걸 막기 위해 판매수량 조건을 같이 건다.
-GRADE_S_RATE = 40      # 이익율(%) 이상이고
-GRADE_S_QTY = 20       # 판매수량(개) 이상이면 S
+GRADE_S_RATE = 40            # 이익율(%) 이상이고
+GRADE_S_QTY = 20             # 판매수량(개) 이상이고
+GRADE_S_SALES = 10_000_000   # 매출(원) 이상이면 S
+
+# 최근 1년 매출이 이 금액을 넘으면 한 등급 올려준다.
+# 이익율이 조금 낮아도 회사에 큰 돈을 벌어다 주는 라인을 챙기기 위한 보정.
+PROMO_SALES = 100_000_000
+PROMO_MONTHS = 12
 GRADE_CUTS = [(25, "A", "#1a7f37"), (15, "B", "#0969da"),
               (5, "C", "#bf8700"), (-5, "D", "#d4691e")]
 
 def grade_of(sub: pd.DataFrame):
-    sub = 온라인만(sub)                    # 등급도 온라인 실적으로만 매긴다
-    settle = sub["정산금_수익"].sum()      # 배송비까지 뺀 금액이 분모
-    if sub.empty or settle <= 0:
+    # 이익율은 온라인만으로 낸다 (매장은 수수료·배송비 구조가 달라 수익율이 부정확).
+    # 반면 수량·매출 조건은 실제로 판 것이므로 매장까지 포함해서 본다.
+    on = 온라인만(sub)
+    settle = on["정산금_수익"].sum()       # 배송비까지 뺀 금액이 분모
+    if on.empty or settle <= 0:
         return None, None
-    rate = sub[COL_PROFIT].sum() / settle * 100
-    if rate >= GRADE_S_RATE and sub[COL_QTY].sum() >= GRADE_S_QTY:
+    rate = on[COL_PROFIT].sum() / settle * 100
+    if (rate >= GRADE_S_RATE
+            and sub[COL_QTY].sum() >= GRADE_S_QTY
+            and sub[COL_PRICE].sum() >= GRADE_S_SALES):
         return ("S", "#7c3aed"), rate
     for cut, gr, color in GRADE_CUTS:
         if rate >= cut:
@@ -636,14 +671,10 @@ if stock_df is not None:
         stock_info = {
             "라인명들": (sorted(set(s_hit["라인명"].dropna().astype(str)))
                      if "라인명" in s_hit.columns else []),
-            # 재고 파일에 같이 들어 있는 EC행사가와 그 수익률
-            # (여러 사이즈가 잡히면 대표값 하나만 — 보통 라인 전체가 같은 값)
-            "EC행사가": (pd.to_numeric(s_hit["EC행사가"], errors="coerce").dropna().median()
-                     if "EC행사가" in s_hit.columns else None),
-            "EC행사수익률": (pd.to_numeric(s_hit["EC행사수익률"], errors="coerce").dropna().median()
-                        if "EC행사수익률" in s_hit.columns else None),
-            "자사몰행사가": (pd.to_numeric(s_hit["자사몰행사가"], errors="coerce").dropna().median()
-                       if "자사몰행사가" in s_hit.columns else None),
+            # 재고 파일에 같이 들어 있는 EC행사가와 그 수익률.
+            # 재고가 0 인 행은 행사가가 -100 처럼 정리 안 된 값이 들어 있어
+            # 그대로 쓰면 수익률이 터무니없이 나온다 → 재고 있는 행만 본다.
+            **_행사가정보(s_hit),
             "현재고": _qty, "총입고량": _inb, "판매량": _sold,
             "입고추정": _inb > _inb_hist,
             "회전율": (_sold / _inb) if _inb else None,
@@ -724,17 +755,29 @@ if stock_df is not None:
             if first_in is not None and pd.notna(last_sale):
                 stock_info["완판일수"] = max((pd.Timestamp(last_sale) - first_in).days, 0)
 
-# 최초 입고 300일 경과마다 한 등급씩 강등 (600일=2등급, 900일=3등급 ...)
+# 등급 보정 두 가지를 합쳐서 한 번에 적용한다.
+#   · 최근 1년 매출이 1억 이상이면      한 등급 올림
+#   · 남은 재고가 300일 지날 때마다     한 등급씩 내림 (600일=2등급 ...)
 GRADE_ORDER = ["S", "A", "B", "C", "D", "E"]
-GRADE_COLORS = {"A": "#1a7f37", "B": "#0969da", "C": "#bf8700", "D": "#d4691e", "E": "#cf222e"}
+GRADE_COLORS = {"S": "#7c3aed", "A": "#1a7f37", "B": "#0969da",
+                "C": "#bf8700", "D": "#d4691e", "E": "#cf222e"}
+
+# 승급 판단은 실제 매출 규모를 보는 것이므로 매장(오프라인)도 포함한다
+_최근1년매출 = float(
+    hit.loc[hit[COL_DATE] >= _g_today - pd.DateOffset(months=PROMO_MONTHS), COL_PRICE].sum())
+promote_steps = 1 if _최근1년매출 >= PROMO_SALES else 0
+
 demote_steps = 0
-if (g_res and stock_info and stock_info.get("최초입고") is not None):
+if g_res and stock_info and stock_info.get("최초입고") is not None:
     demote_steps = int(stock_info["최초입고"] // 300)
-    if demote_steps > 0:
-        _i = min(GRADE_ORDER.index(g_res[0]) + demote_steps, len(GRADE_ORDER) - 1)
-        demote_steps = _i - GRADE_ORDER.index(g_res[0])   # 실제 적용된 단계
-        _g2 = GRADE_ORDER[_i]
-        g_res = (_g2, GRADE_COLORS[_g2])
+
+if g_res and (promote_steps or demote_steps):
+    _i0 = GRADE_ORDER.index(g_res[0])
+    _i = min(max(_i0 + demote_steps - promote_steps, 0), len(GRADE_ORDER) - 1)
+    # 화면에는 '실제로 적용된' 단계만 보여준다 (S 위나 E 아래로는 못 가므로)
+    demote_steps = max(_i - _i0, 0)
+    promote_steps = max(_i0 - _i, 0)
+    g_res = (GRADE_ORDER[_i], GRADE_COLORS[GRADE_ORDER[_i]])
 
 st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 · "
             f"몰 {hit[COL_MALL].nunique()}곳 · 브랜드: {', '.join(brands)}")
@@ -828,6 +871,9 @@ with cols[5]:
             # 행사가 기준으로 계산된 값이라 이익율과 나란히 두고 비교한다.
             + (f"<br>EC기준 수익율 <b style='color:#333'>{_ec율 * 100:.1f}%</b>"
                if _ec율 is not None else "")
+            + (f"<br><span style='color:#1a7f37'>⬆ 최근 1년 매출 "
+               f"{_최근1년매출 / 1e8:.1f}억 → +{promote_steps}등급</span>"
+               if promote_steps else "")
             + "</span></div>",
             unsafe_allow_html=True)
     else:
@@ -1041,7 +1087,6 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
       구간별 합계를 누적해서 모든 라인명의 기간을 한 번에 정한다.
     """
     d = load_all_data(file_sigs, mall_sig)
-    d = 온라인만(d)                                   # 등급은 온라인 실적만
     d = d[d["연도"].isin([2024, 2025, 2026])]
     d = d[d[COL_QTY] > 0]                            # 수량 0 건 제외
     if COL_BRAND in d.columns:                       # 리퍼는 등급 대상이 아니다
@@ -1073,12 +1118,19 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
               .agg(lambda x: x.astype(str).mode().iat[0] if len(x) else "")
               if COL_BRAND in d.columns else None)
 
+    # 이익율(수익·정산)은 온라인 행만, 수량·매출은 매장까지 포함.
+    # 기간을 넓힐 때 세는 '건수'도 이익율의 표본이므로 온라인 기준으로 센다.
+    _온 = ~d["매장"] if "매장" in d.columns else pd.Series(True, index=d.index)
+    d = d.assign(_온=_온.astype(int),
+                 _수익온=d[COL_PROFIT].where(_온, 0),
+                 _정산온=d["정산금_수익"].where(_온, 0))
+
     합 = (d.groupby(["라인명", "구간"], observed=True)
-          .agg(건수=(COL_QTY, "size"), 수량=(COL_QTY, "sum"),
-               수익=(COL_PROFIT, "sum"), 정산=("정산금_수익", "sum")))
+          .agg(건수=("_온", "sum"), 수량=(COL_QTY, "sum"), 매출=(COL_PRICE, "sum"),
+               수익=("_수익온", "sum"), 정산=("_정산온", "sum")))
     # 구간별 누적합. (groupby(axis=1) 은 pandas 최신판에서 없어져 항목별로 따로 돌린다)
     누적 = {이름: 합[이름].unstack("구간", fill_value=0).sort_index(axis=1).cumsum(axis=1)
-          for 이름 in ("건수", "수량", "수익", "정산")}
+          for 이름 in ("건수", "수량", "매출", "수익", "정산")}
 
     건수 = 누적["건수"]
     # 100건을 넘기는 첫 구간. 끝까지 못 넘기면 마지막 구간(=24개월, 없으면 전체)
@@ -1090,6 +1142,7 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
         "라인명": 건수.index.astype(str),
         "건수": 건수.values[행, 고른칸],
         "수량": 누적["수량"].values[행, 고른칸],
+        "매출": 누적["매출"].values[행, 고른칸],
         "수익": 누적["수익"].values[행, 고른칸],
         "정산금": 누적["정산"].values[행, 고른칸],
     })
@@ -1101,7 +1154,8 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
         v = r["이익율(%)"]
         if pd.isna(v) or r["정산금"] <= 0:
             return "-"
-        if v >= GRADE_S_RATE and r["수량"] >= GRADE_S_QTY:
+        if (v >= GRADE_S_RATE and r["수량"] >= GRADE_S_QTY
+                and r["매출"] >= GRADE_S_SALES):
             return "S"
         for cut, gr, _ in GRADE_CUTS:
             if v >= cut:
@@ -1109,10 +1163,25 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
         return "E"
 
     표["등급"] = 표.apply(_등급, axis=1)
+
+    # 최근 1년 매출 1억 이상이면 한 등급 올림.
+    # 구간 3 = 12개월 (0=3, 1=6, 2=9, 3=12개월). 그 칸의 누적 매출을 본다.
+    칸목록 = list(누적["매출"].columns)
+    목표칸 = PROMO_MONTHS // GRADE_STEP_MONTHS - 1
+    쓸칸 = max([i for i, c in enumerate(칸목록) if c <= 목표칸], default=len(칸목록) - 1)
+    표["최근1년매출"] = 누적["매출"].values[행, 쓸칸]
+    올림 = 표["최근1년매출"] >= PROMO_SALES
+    자리 = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)})
+    표.loc[올림 & 자리.notna(), "등급"] = (
+        (자리[올림 & 자리.notna()] - 1).clip(lower=0).map(lambda i: GRADE_ORDER[int(i)]))
+
     표["이익율(%)"] = 표["이익율(%)"].round(2)
     표["브랜드"] = (표["라인명"].map(브랜드표) if 브랜드표 is not None else "")
     표 = 표[표["수량"] > 0]                            # 기간 내 판매가 없으면 뺀다
-    표 = 표[["라인명", "브랜드", "등급", "이익율(%)", "수량", "건수", "기준기간"]]
+    표["매출"] = 표["매출"].round(0)
+    표["최근1년매출"] = 표["최근1년매출"].round(0)
+    표 = 표[["라인명", "브랜드", "등급", "이익율(%)", "수량", "매출",
+           "최근1년매출", "건수", "기준기간"]]
     표["_ord"] = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)}).fillna(99)
     return (표.sort_values(["_ord", "수량"], ascending=[True, False])
             .drop(columns=["_ord"]).reset_index(drop=True))
