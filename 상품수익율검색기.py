@@ -486,20 +486,6 @@ def _행사가정보(s_hit) -> dict:
     return 결과
 
 
-def _행사가표시(info) -> str:
-    """재고 파일에 들어 있는 EC행사가·수익률을 재고 칸 아래에 덧붙인다."""
-    가 = info.get("EC행사가")
-    율 = info.get("EC행사수익률")
-    자 = info.get("자사몰행사가")
-    if 가 is None or pd.isna(가) or 가 <= 0:
-        return ""
-    조각 = [f"EC행사가 <b>{가:,.0f}원</b>"]
-    if 자 is not None and pd.notna(자) and 자 > 0:
-        조각.append(f"자사몰 <b>{자:,.0f}원</b>")
-    return ("<br><span style='border-top:1px dashed #e6e6e6;display:block;"
-            "margin-top:0.3rem;padding-top:0.3rem'>" + " · ".join(조각) + "</span>")
-
-
 def _한줄지표(라벨1, 값1, 라벨2, 값2):
     """좁은 칸에 지표 두 개를 한 줄로. st.metric 보다 작은 글씨로 찍는다."""
     st.markdown(
@@ -915,7 +901,6 @@ with cols[5]:
             + (f"최근입고 <b>{int(_r)}일 전</b>" if pd.notna(_r) else "최근입고 <b>-</b>")
             + (f"<br>✅ 완판까지 <b>{stock_info['완판일수']:,}일</b>"
                if stock_info.get("완판일수") is not None else "")
-            + _행사가표시(stock_info)
             + ("<br><span style='color:#999;font-size:0.75rem'>* 입고이력 누락분 보정(판매+재고)</span>"
                if stock_info.get("입고추정") else "")
             + "</div>", unsafe_allow_html=True)
