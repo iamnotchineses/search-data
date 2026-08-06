@@ -450,13 +450,21 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-st.caption("데이터: " + ", ".join(os.path.relpath(f, BASE_DIR) for f, _ in file_sigs)
-           + f" · {len(df):,}건 · 반품·0원 행"
-           + (f" · 파일 간 중복 {df.attrs.get('중복제거', 0):,}건" if df.attrs.get("중복제거") else "")
-           + " 제외"
-           + " · 정산금 = 판매가 − 수수료"
-           + " · 수익율·이익율 = 수익(실배송비) 기준, 매장(오프라인) 제외"
-           + " · 판매수량·판매금액은 매장 포함")
+st.markdown(
+    "<div style='font-size:0.82rem;color:#555;line-height:1.75;"
+    "background:#f6f8fa;border:1px solid #e6e8eb;border-radius:6px;"
+    "padding:0.5rem 0.75rem;margin-bottom:0.5rem'>"
+    "<b>상품등급 산정 규칙</b> — 이익율(수익 ÷ 정산금) 기준<br>"
+    "<span style='color:#7c3aed;font-weight:700'>S</span> 40% 이상 <b>이면서</b> 판매 20개 이상 · "
+    "<span style='color:#1a7f37;font-weight:700'>A</span> 25% 이상 · "
+    "<span style='color:#0969da;font-weight:700'>B</span> 15% 이상 · "
+    "<span style='color:#bf8700;font-weight:700'>C</span> 5% 이상 · "
+    "<span style='color:#d4691e;font-weight:700'>D</span> −5% 이상 · "
+    "<span style='color:#cf222e;font-weight:700'>E</span> −5% 미만<br>"
+    "· 기간은 최근 3개월부터, 100건을 넘길 때까지 3개월씩 넓힘 (최대 24개월)<br>"
+    "· 매장(오프라인) 판매는 등급·수익율에서 제외 (판매수량·판매금액에는 포함)<br>"
+    "· 남은 재고 중 가장 오래된 것이 300일 지날 때마다 한 등급씩 강등"
+    "</div>", unsafe_allow_html=True)
 if mall_sig is None:
     st.warning("몰분류 파일(*몰분류*.xlsx)이 없어 매장(오프라인) 판매를 구분하지 못했습니다. "
                "수익율·이익율에 매장 실적이 섞여 있습니다.")
@@ -891,13 +899,49 @@ st.divider()
 # ── 주문건별 상세 ──
 st.subheader("주문건별 상세")
 
-f1, f2, f3 = st.columns([2, 2, 1])
+def 등급범위(pool: pd.DataFrame) -> pd.DataFrame:
+    """등급 산출에 쓸 기간을 고른다 (위 상품등급과 같은 규칙)."""
+    pool = pool.sort_values(COL_DATE, ascending=False)
+    base = pool
+    for 개월 in range(GRADE_STEP_MONTHS, GRADE_MAX_MONTHS + 1, GRADE_STEP_MONTHS):
+        base = pool[pool[COL_DATE] >= _g_today - pd.DateOffset(months=개월)]
+        if len(base) > GRADE_TARGET:
+            break
+    return pool if base.empty else base
+
+
+# 모델 하나하나 등급을 내므로 검색이 넓으면 그만큼 오래 걸린다.
+# (모델 수만큼 기간 확장 계산이 반복된다) 상한을 넘으면 계산을 건너뛴다.
+GRADE_PER_MODEL_MAX = 300
+
+
+@st.cache_data(show_spinner=False)
+def 모델별등급(_hit: pd.DataFrame, sig) -> dict:
+    """검색된 모델 각각의 등급. 상단 상품등급과 같은 방식으로 모델 단위로 낸다."""
+    표 = {}
+    for md, sub in _hit.groupby(COL_MODEL, observed=True):
+        res, _ = grade_of(등급범위(sub[sub["연도"].isin([2024, 2025, 2026])]))
+        표[str(md)] = res[0] if res else "-"
+    return 표
+
+
+if len(matched) <= GRADE_PER_MODEL_MAX:
+    _등급표 = 모델별등급(hit, (query, len(hit)))
+else:
+    _등급표 = {}
+    st.caption(f"모델이 {len(matched):,}종이라 등급별 필터는 생략했습니다 "
+               f"(검색어를 좁히면 표시됩니다).")
+
+f1, f2, f3, f4 = st.columns([2, 2, 1, 1])
 with f1:
     mall_sel = st.multiselect("쇼핑몰", sorted(str(x) for x in hit[COL_MALL].dropna().unique()))
 with f2:
     model_sel = st.multiselect("모델명", sorted(str(x) for x in matched))
 with f3:
     year_sel = st.multiselect("연도", sorted(hit["연도"].unique(), reverse=True))
+with f4:
+    _있는등급 = [g for g in GRADE_ORDER + ["-"] if g in set(_등급표.values())]
+    grade_sel = st.multiselect("등급", _있는등급, disabled=not _있는등급)
 
 detail = hit
 if mall_sel:
@@ -906,6 +950,9 @@ if model_sel:
     detail = detail[detail[COL_MODEL].astype(str).isin(model_sel)]
 if year_sel:
     detail = detail[detail["연도"].isin(year_sel)]
+if grade_sel:
+    _대상 = {md for md, g in _등급표.items() if g in grade_sel}
+    detail = detail[detail[COL_MODEL].astype(str).isin(_대상)]
 
 detail = detail.sort_values(COL_DATE, ascending=False)
 
@@ -914,6 +961,9 @@ show = detail[[COL_DATE, COL_MALL, COL_BRAND, COL_MODEL, COL_QTY, COL_COST,
     columns={COL_COST: "원가", COL_PRICE: "최종판매가",
              COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
 show[COL_DATE] = show[COL_DATE].dt.strftime("%Y-%m-%d")
+# 어느 모델이 무슨 등급인지 표에서도 바로 보이게
+if _등급표:
+    show.insert(4, "등급", detail[COL_MODEL].astype(str).map(_등급표).values)
 
 st.dataframe(
     show,
