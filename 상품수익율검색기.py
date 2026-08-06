@@ -65,9 +65,12 @@ COL_PRICE = "최종판매가"
 COL_PROFIT = "수익원(실배송비)"
 COL_DATE = "출고날짜"
 COL_NOTE = "비고"
+COL_FEE = "수수료액"          # 새 변환기부터 담긴다 (없으면 예전 방식으로 동작)
+COL_SHIP = "실배송비(품목별)"
 
 USE_COLS = [COL_ORDER, COL_MALL, COL_BRAND, "대카테고리", "카테고리",
-            COL_MODEL, COL_QTY, COL_COST, COL_PRICE, COL_PROFIT, COL_DATE, COL_NOTE]
+            COL_MODEL, COL_QTY, COL_COST, COL_PRICE, COL_FEE, COL_SHIP,
+            COL_PROFIT, COL_DATE, COL_NOTE]
 
 CAT_COLS = [COL_MALL, COL_BRAND, "대카테고리", "카테고리", COL_NOTE, COL_MODEL]
 
@@ -358,10 +361,12 @@ def load_all_data(file_sigs: tuple, mall_sig=None) -> pd.DataFrame:
     # 판매가 0원 행 제외
     df = df[df[COL_PRICE] > 0].drop(columns=[COL_ORDER])
 
-    # 매장(오프라인) 판매 제외
+    # 매장(오프라인) 판매는 지우지 않고 표시만 해 둔다.
+    # 판매수량·판매금액·로우데이터에는 포함하고,
+    # 수익율·이익율·등급을 낼 때만 빼기 위해서다.
     store_malls = load_store_malls(mall_sig)
-    if store_malls:
-        df = df[~df[COL_MALL].astype(str).str.strip().isin(store_malls)]
+    df["매장"] = (df[COL_MALL].astype(str).str.strip().isin(store_malls)
+                if store_malls else False)
 
     # 메모리 절감
     for c in CAT_COLS:
@@ -374,7 +379,22 @@ def load_all_data(file_sigs: tuple, mall_sig=None) -> pd.DataFrame:
     # 파생
     df["연도"] = df[COL_DATE].dt.year.astype("int16")
     df["수익율"] = (df[COL_PROFIT] / df[COL_PRICE] * 100).astype("float32")
-    df["정산금"] = (df[COL_COST] + df[COL_PROFIT]).astype("float32")
+
+    # 정산금은 두 가지로 나눈다.
+    #   정산금       = 최종판매가 - 수수료액        (실제로 정산돼 들어온 돈. 배송비 차감 안 함)
+    #   정산금_수익   = 정산금 - 실배송비            (= 출고원가 + 수익원(실배송비))
+    # 화면에 보여주는 금액은 앞의 것, 수익율/이익율 계산은 뒤의 것을 쓴다.
+    df["정산금_수익"] = (df[COL_COST] + df[COL_PROFIT]).astype("float32")
+    if COL_FEE in df.columns:
+        # 수수료액이 있는 행만 새 산식. 옛 parquet(24/25년 등)에는 그 값이 없는데
+        # 0 으로 채우면 수수료를 안 뺀 판매가가 그대로 정산금이 되어 크게 부풀려진다.
+        수수료 = pd.to_numeric(df[COL_FEE], errors="coerce")
+        df["정산금"] = np.where(수수료.notna(),
+                             df[COL_PRICE] -수수료.fillna(0),
+                             df["정산금_수익"]).astype("float32")
+    else:
+        # 수수료액 컬럼 자체가 없으면 예전 방식 그대로
+        df["정산금"] = df["정산금_수익"]
 
     out = df.reset_index(drop=True)
     out.attrs["중복제거"] = 버린수
@@ -432,11 +452,14 @@ except Exception as e:
 
 st.caption("데이터: " + ", ".join(os.path.relpath(f, BASE_DIR) for f, _ in file_sigs)
            + f" · {len(df):,}건 · 반품·0원 행"
-           + (" · 매장(오프라인) 판매" if mall_sig else "")
            + (f" · 파일 간 중복 {df.attrs.get('중복제거', 0):,}건" if df.attrs.get("중복제거") else "")
-           + " 제외 · 수익율 = 수익(실배송비) ÷ 판매가 · 정산금 = 원가 + 수익")
+           + " 제외"
+           + " · 정산금 = 판매가 − 수수료"
+           + " · 수익율·이익율 = 수익(실배송비) 기준, 매장(오프라인) 제외"
+           + " · 판매수량·판매금액은 매장 포함")
 if mall_sig is None:
-    st.warning("몰분류 파일(*몰분류*.xlsx)이 없어 매장(오프라인) 판매가 제외되지 않았습니다.")
+    st.warning("몰분류 파일(*몰분류*.xlsx)이 없어 매장(오프라인) 판매를 구분하지 못했습니다. "
+               "수익율·이익율에 매장 실적이 섞여 있습니다.")
 
 query = st.text_input("상품 라인명 검색", placeholder="예: A158WA, 590702 ...",
                       help="모델명 부분일치 (대소문자 무시, 공백으로 여러 단어 AND 검색)")
@@ -462,15 +485,31 @@ hit = df[df[COL_MODEL].isin(matched)]
 
 brands = [str(b) for b in hit[COL_BRAND].dropna().unique()[:5]]
 
-# 상품등급: 이익율(수익 ÷ 정산금) 기준 A~E
+def 온라인만(sub: pd.DataFrame) -> pd.DataFrame:
+    """수익성 지표에서는 매장(오프라인) 판매를 뺀다.
+
+    매장은 수수료·배송비 구조가 온라인과 달라 섞으면 수익율이 왜곡된다.
+    반대로 판매수량·판매금액은 실제로 팔린 것이므로 매장도 포함해야 한다.
+    """
+    return sub[~sub["매장"]] if "매장" in sub.columns else sub
+
+
+# 상품등급: 이익율(수익 ÷ 정산금) 기준 S~E
+# S 는 이익율만으로 주지 않는다. 몇 개 안 팔린 상품이 이익율만 높아
+# 최고 등급을 받는 걸 막기 위해 판매수량 조건을 같이 건다.
+GRADE_S_RATE = 40      # 이익율(%) 이상이고
+GRADE_S_QTY = 20       # 판매수량(개) 이상이면 S
 GRADE_CUTS = [(25, "A", "#1a7f37"), (15, "B", "#0969da"),
               (5, "C", "#bf8700"), (-5, "D", "#d4691e")]
 
 def grade_of(sub: pd.DataFrame):
-    settle = sub["정산금"].sum()
+    sub = 온라인만(sub)                    # 등급도 온라인 실적으로만 매긴다
+    settle = sub["정산금_수익"].sum()      # 배송비까지 뺀 금액이 분모
     if sub.empty or settle <= 0:
         return None, None
     rate = sub[COL_PROFIT].sum() / settle * 100
+    if rate >= GRADE_S_RATE and sub[COL_QTY].sum() >= GRADE_S_QTY:
+        return ("S", "#7c3aed"), rate
     for cut, gr, color in GRADE_CUTS:
         if rate >= cut:
             return (gr, color), rate
@@ -609,7 +648,7 @@ if stock_df is not None:
                 stock_info["완판일수"] = max((pd.Timestamp(last_sale) - first_in).days, 0)
 
 # 최초 입고 300일 경과마다 한 등급씩 강등 (600일=2등급, 900일=3등급 ...)
-GRADE_ORDER = ["A", "B", "C", "D", "E"]
+GRADE_ORDER = ["S", "A", "B", "C", "D", "E"]
 GRADE_COLORS = {"A": "#1a7f37", "B": "#0969da", "C": "#bf8700", "D": "#d4691e", "E": "#cf222e"}
 demote_steps = 0
 if (g_res and stock_info and stock_info.get("최초입고") is not None):
@@ -627,16 +666,24 @@ st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 ·
 # ── 상단 KPI ──
 def agg_stats(sub: pd.DataFrame) -> dict:
     if sub.empty:
-        return {"수량": 0, "수익율": None, "평균정산금": None, "이익율": None}
-    sales = sub[COL_PRICE].sum()
-    profit = sub[COL_PROFIT].sum()
-    settle = sub["정산금"].sum()
+        return {"수량": 0, "수익율": None, "평균정산금": None, "이익율": None,
+                "매장수량": 0}
     qty = sub[COL_QTY].sum()
+    settle = sub["정산금"].sum()          # 배송비 차감 안 한 금액 (표시용)
+
+    # 수익율·이익율은 온라인만
+    on = 온라인만(sub)
+    sales_on = on[COL_PRICE].sum()
+    profit_on = on[COL_PROFIT].sum()
+    settle_on = on["정산금_수익"].sum()   # 배송비까지 뺀 금액 (수익 기준)
+
     return {"수량": int(qty),
+            "매장수량": int(sub.loc[sub["매장"], COL_QTY].sum()) if "매장" in sub.columns else 0,
             # 수익율 = 수익 ÷ 판매가   (고객이 낸 돈 대비)
-            "수익율": (profit / sales * 100) if sales else None,
-            # 이익율 = 수익 ÷ 정산금   (실제로 우리 손에 들어온 돈 대비, 상품등급과 같은 산식)
-            "이익율": (profit / settle * 100) if settle else None,
+            "수익율": (profit_on / sales_on * 100) if sales_on else None,
+            # 이익율 = 수익 ÷ 정산금(배송비 차감)  — 상품등급과 같은 산식
+            "이익율": (profit_on / settle_on * 100) if settle_on else None,
+            # 평균 정산금은 실제 정산된 금액 기준, 매장 포함
             "평균정산금": (settle / qty) if qty else None}
 
 
@@ -814,6 +861,7 @@ st.subheader("몰별 상세")
 
 
 def mall_summary(sub: pd.DataFrame) -> pd.DataFrame:
+    # 몰별 상세는 매장도 포함해서 보여준다 (실제 판매 내역이므로)
     g = (sub.groupby(COL_MALL, observed=True)
          .agg(수량합=(COL_QTY, "sum"), 총매출=(COL_PRICE, "sum"),
               _정산금합=("정산금", "sum"), _수익합=(COL_PROFIT, "sum"))
