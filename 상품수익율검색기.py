@@ -415,6 +415,53 @@ def fmt_pct(v):
 WON = st.column_config.NumberColumn(format="localized")
 NUM = st.column_config.NumberColumn(format="localized")
 
+# 코드성 컬럼. 엑셀에서 '텍스트' 서식으로 넣어야 값이 안 망가진다.
+#   710548524014 → 7.10548E+11 로 바뀌고, 앞자리 0 은 그냥 사라진다.
+TEXT_COLS = ("라인명", "브랜드", "대카테고리", "카테고리", "종류", "성별", "모델명",
+             "등급", "기준기간")
+
+
+@st.cache_data(show_spinner=False)
+def _엑셀바이트(df: pd.DataFrame, 시트명: str) -> bytes:
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 시트명
+
+    ws.append(list(df.columns))
+    for 칸 in ws[1]:
+        칸.font = Font(bold=True)
+        칸.alignment = Alignment(horizontal="center")
+
+    for 행 in df.itertuples(index=False):
+        ws.append(["" if pd.isna(v) else v for v in 행])
+
+    최대너비 = {"모델명": 60, "라인명": 28}
+    for i, 이름 in enumerate(df.columns, start=1):
+        문자 = get_column_letter(i)
+        if 이름 in TEXT_COLS:
+            for 칸 in ws[문자][1:]:          # 머리글 제외
+                칸.number_format = "@"       # 텍스트
+        elif 이름.endswith("(%)"):
+            for 칸 in ws[문자][1:]:
+                칸.number_format = "0.00"
+        else:
+            for 칸 in ws[문자][1:]:
+                칸.number_format = "#,##0"
+        길이 = max([len(str(이름))] + [len(str(v)) for v in df[이름].head(300)])
+        ws.column_dimensions[문자].width = min(길이 + 2, 최대너비.get(이름, 20))
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
 
 def _한줄지표(라벨1, 값1, 라벨2, 값2):
     """좁은 칸에 지표 두 개를 한 줄로. st.metric 보다 작은 글씨로 찍는다."""
@@ -910,38 +957,13 @@ def 등급범위(pool: pd.DataFrame) -> pd.DataFrame:
     return pool if base.empty else base
 
 
-# 모델 하나하나 등급을 내므로 검색이 넓으면 그만큼 오래 걸린다.
-# (모델 수만큼 기간 확장 계산이 반복된다) 상한을 넘으면 계산을 건너뛴다.
-GRADE_PER_MODEL_MAX = 300
-
-
-@st.cache_data(show_spinner=False)
-def 모델별등급(_hit: pd.DataFrame, sig) -> dict:
-    """검색된 모델 각각의 등급. 상단 상품등급과 같은 방식으로 모델 단위로 낸다."""
-    표 = {}
-    for md, sub in _hit.groupby(COL_MODEL, observed=True):
-        res, _ = grade_of(등급범위(sub[sub["연도"].isin([2024, 2025, 2026])]))
-        표[str(md)] = res[0] if res else "-"
-    return 표
-
-
-if len(matched) <= GRADE_PER_MODEL_MAX:
-    _등급표 = 모델별등급(hit, (query, len(hit)))
-else:
-    _등급표 = {}
-    st.caption(f"모델이 {len(matched):,}종이라 등급별 필터는 생략했습니다 "
-               f"(검색어를 좁히면 표시됩니다).")
-
-f1, f2, f3, f4 = st.columns([2, 2, 1, 1])
+f1, f2, f3 = st.columns([2, 2, 1])
 with f1:
     mall_sel = st.multiselect("쇼핑몰", sorted(str(x) for x in hit[COL_MALL].dropna().unique()))
 with f2:
     model_sel = st.multiselect("모델명", sorted(str(x) for x in matched))
 with f3:
     year_sel = st.multiselect("연도", sorted(hit["연도"].unique(), reverse=True))
-with f4:
-    _있는등급 = [g for g in GRADE_ORDER + ["-"] if g in set(_등급표.values())]
-    grade_sel = st.multiselect("등급", _있는등급, disabled=not _있는등급)
 
 detail = hit
 if mall_sel:
@@ -950,9 +972,6 @@ if model_sel:
     detail = detail[detail[COL_MODEL].astype(str).isin(model_sel)]
 if year_sel:
     detail = detail[detail["연도"].isin(year_sel)]
-if grade_sel:
-    _대상 = {md for md, g in _등급표.items() if g in grade_sel}
-    detail = detail[detail[COL_MODEL].astype(str).isin(_대상)]
 
 detail = detail.sort_values(COL_DATE, ascending=False)
 
@@ -962,8 +981,6 @@ show = detail[[COL_DATE, COL_MALL, COL_BRAND, COL_MODEL, COL_QTY, COL_COST,
              COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
 show[COL_DATE] = show[COL_DATE].dt.strftime("%Y-%m-%d")
 # 어느 모델이 무슨 등급인지 표에서도 바로 보이게
-if _등급표:
-    show.insert(4, "등급", detail[COL_MODEL].astype(str).map(_등급표).values)
 
 st.dataframe(
     show,
@@ -980,6 +997,108 @@ st.download_button("CSV 다운로드", show.to_csv(index=False).encode("utf-8-si
 st.divider()
 
 # ──────────────────────────────────────────────
+# 전체 상품 등급 내려받기
+# ──────────────────────────────────────────────
+st.subheader("🏅 전체 상품 등급")
+
+
+@st.cache_data(show_spinner="전체 등급 계산 중...")
+def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
+    """모든 라인명의 등급을 한 번에 계산한다.
+
+    라인명 하나씩 기간을 넓혀 가며 재면 2만 번을 반복해야 해서 몇 분씩 걸린다.
+    → 각 행이 '몇 번째 기간 구간'에 드는지 미리 표시하고,
+      구간별 합계를 누적해서 모든 라인명의 기간을 한 번에 정한다.
+    """
+    d = load_all_data(file_sigs, mall_sig)
+    d = 온라인만(d)                                   # 등급은 온라인 실적만
+    d = d[d["연도"].isin([2024, 2025, 2026])]
+    if d.empty:
+        return pd.DataFrame()
+
+    # 모델명 → 라인명 (재고 파일 기준, 없으면 사이즈만 떼어 씀)
+    s = load_stock(stock_sig)
+    맵 = {}
+    if s is not None and "라인명" in s.columns:
+        맵 = dict(zip(s["모델명"].astype(str).str.strip().str.upper(),
+                     s["라인명"].astype(str).str.strip()))
+    모델 = d[COL_MODEL].astype(str)
+    라인 = 모델.str.strip().str.upper().map(맵)
+    라인 = 라인.fillna(모델.str.replace(_RX_SIZE, "", regex=True).str.strip())
+    d = d.assign(라인명=라인)
+
+    # 기간 구간: 최근 3,6,...,24개월. 그 밖은 마지막 칸.
+    끝 = d[COL_DATE].max()
+    경계 = [끝 - pd.DateOffset(months=k)
+          for k in range(GRADE_STEP_MONTHS, GRADE_MAX_MONTHS + 1, GRADE_STEP_MONTHS)]
+    구간 = np.searchsorted(np.array(경계[::-1], dtype="datetime64[ns]"),
+                         d[COL_DATE].values.astype("datetime64[ns]"), side="right")
+    d = d.assign(구간=len(경계) - 구간)                # 0 = 최근 3개월
+    d["구간"] = d["구간"].clip(0, len(경계))
+
+    합 = (d.groupby(["라인명", "구간"], observed=True)
+          .agg(건수=(COL_QTY, "size"), 수량=(COL_QTY, "sum"),
+               수익=(COL_PROFIT, "sum"), 정산=("정산금_수익", "sum")))
+    # 구간별 누적합. (groupby(axis=1) 은 pandas 최신판에서 없어져 항목별로 따로 돌린다)
+    누적 = {이름: 합[이름].unstack("구간", fill_value=0).sort_index(axis=1).cumsum(axis=1)
+          for 이름 in ("건수", "수량", "수익", "정산")}
+
+    건수 = 누적["건수"]
+    # 100건을 넘기는 첫 구간. 끝까지 못 넘기면 마지막 구간(=24개월, 없으면 전체)
+    넘김 = 건수.gt(GRADE_TARGET)
+    고른칸 = np.where(넘김.any(axis=1), 넘김.values.argmax(axis=1), 건수.shape[1] - 1)
+    행 = np.arange(len(건수))
+
+    표 = pd.DataFrame({
+        "라인명": 건수.index.astype(str),
+        "건수": 건수.values[행, 고른칸],
+        "수량": 누적["수량"].values[행, 고른칸],
+        "수익": 누적["수익"].values[행, 고른칸],
+        "정산금": 누적["정산"].values[행, 고른칸],
+    })
+    표["기준기간"] = [f"최근 {(k + 1) * GRADE_STEP_MONTHS}개월"
+                  if k < len(경계) else "전체" for k in 고른칸]
+    표["이익율(%)"] = np.where(표["정산금"] > 0, 표["수익"] / 표["정산금"] * 100, np.nan)
+
+    def _등급(r):
+        v = r["이익율(%)"]
+        if pd.isna(v) or r["정산금"] <= 0:
+            return "-"
+        if v >= GRADE_S_RATE and r["수량"] >= GRADE_S_QTY:
+            return "S"
+        for cut, gr, _ in GRADE_CUTS:
+            if v >= cut:
+                return gr
+        return "E"
+
+    표["등급"] = 표.apply(_등급, axis=1)
+    표["이익율(%)"] = 표["이익율(%)"].round(2)
+    표 = 표[["라인명", "등급", "이익율(%)", "수량", "건수", "기준기간"]]
+    표["_ord"] = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)}).fillna(99)
+    return (표.sort_values(["_ord", "수량"], ascending=[True, False])
+            .drop(columns=["_ord"]).reset_index(drop=True))
+
+
+_등급표전체 = 전체등급표(file_sigs, get_stock_sig(), mall_sig)
+
+if _등급표전체.empty:
+    st.caption("등급을 낼 수 있는 데이터가 없습니다.")
+else:
+    _분포 = _등급표전체["등급"].value_counts()
+    st.caption("라인명 **{:,}개** · ".format(len(_등급표전체))
+               + " · ".join(f"{g} {int(_분포.get(g, 0)):,}" for g in GRADE_ORDER
+                            if _분포.get(g, 0))
+               + " · 매장(오프라인) 제외, 상단 규칙과 같은 방식")
+    st.download_button(
+        f"⬇ 전체 상품 등급 {len(_등급표전체):,}개 내려받기 (엑셀)",
+        data=_엑셀바이트(_등급표전체, "상품등급"),
+        file_name=f"상품등급_{pd.Timestamp.today():%Y%m%d}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+st.divider()
+
+# ──────────────────────────────────────────────
 # 이미지 없는 라인명 내려받기
 # ──────────────────────────────────────────────
 st.subheader("🖼 이미지 없는 라인명")
@@ -987,51 +1106,6 @@ st.subheader("🖼 이미지 없는 라인명")
 
 # 사은품·쇼핑백·PR(홍보용)·리퍼·노다는 원래 상품 이미지가 없는 것이 정상이라 목록에서 뺀다
 IMG_SKIP_BRANDS = {"사은품", "쇼핑백", "PR", "리퍼", "노다"}
-
-# 코드성 컬럼. 엑셀에서 '텍스트' 서식으로 넣어야 값이 안 망가진다.
-#   710548524014 → 7.10548E+11 로 바뀌고, 앞자리 0 은 그냥 사라진다.
-TEXT_COLS = ("라인명", "브랜드", "대카테고리", "카테고리", "종류", "성별", "모델명")
-
-
-@st.cache_data(show_spinner=False)
-def _엑셀바이트(df: pd.DataFrame, 시트명: str) -> bytes:
-    import io
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font
-    from openpyxl.utils import get_column_letter
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = 시트명
-
-    ws.append(list(df.columns))
-    for 칸 in ws[1]:
-        칸.font = Font(bold=True)
-        칸.alignment = Alignment(horizontal="center")
-
-    for 행 in df.itertuples(index=False):
-        ws.append(["" if pd.isna(v) else v for v in 행])
-
-    최대너비 = {"모델명": 60, "라인명": 28}
-    for i, 이름 in enumerate(df.columns, start=1):
-        문자 = get_column_letter(i)
-        코드칸 = 이름 in TEXT_COLS
-        if 코드칸:
-            for 칸 in ws[문자][1:]:          # 머리글 제외
-                칸.number_format = "@"       # 텍스트
-        else:
-            for 칸 in ws[문자][1:]:
-                칸.number_format = "#,##0"
-        길이 = max([len(str(이름))] + [len(str(v)) for v in df[이름].head(300)])
-        ws.column_dimensions[문자].width = min(길이 + 2, 최대너비.get(이름, 20))
-
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
 
 @st.cache_data(show_spinner=False)
 def 이미지없는_라인명(stock_sig, image_sig) -> pd.DataFrame:
