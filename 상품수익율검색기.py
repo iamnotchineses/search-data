@@ -463,6 +463,20 @@ def _엑셀바이트(df: pd.DataFrame, 시트명: str) -> bytes:
     return buf.getvalue()
 
 
+def _행사가표시(info) -> str:
+    """재고 파일에 들어 있는 EC행사가·수익률을 재고 칸 아래에 덧붙인다."""
+    가 = info.get("EC행사가")
+    율 = info.get("EC행사수익률")
+    자 = info.get("자사몰행사가")
+    if 가 is None or pd.isna(가) or 가 <= 0:
+        return ""
+    조각 = [f"EC행사가 <b>{가:,.0f}원</b>"]
+    if 자 is not None and pd.notna(자) and 자 > 0:
+        조각.append(f"자사몰 <b>{자:,.0f}원</b>")
+    return ("<br><span style='border-top:1px dashed #e6e6e6;display:block;"
+            "margin-top:0.3rem;padding-top:0.3rem'>" + " · ".join(조각) + "</span>")
+
+
 def _한줄지표(라벨1, 값1, 라벨2, 값2):
     """좁은 칸에 지표 두 개를 한 줄로. st.metric 보다 작은 글씨로 찍는다."""
     st.markdown(
@@ -622,6 +636,14 @@ if stock_df is not None:
         stock_info = {
             "라인명들": (sorted(set(s_hit["라인명"].dropna().astype(str)))
                      if "라인명" in s_hit.columns else []),
+            # 재고 파일에 같이 들어 있는 EC행사가와 그 수익률
+            # (여러 사이즈가 잡히면 대표값 하나만 — 보통 라인 전체가 같은 값)
+            "EC행사가": (pd.to_numeric(s_hit["EC행사가"], errors="coerce").dropna().median()
+                     if "EC행사가" in s_hit.columns else None),
+            "EC행사수익률": (pd.to_numeric(s_hit["EC행사수익률"], errors="coerce").dropna().median()
+                        if "EC행사수익률" in s_hit.columns else None),
+            "자사몰행사가": (pd.to_numeric(s_hit["자사몰행사가"], errors="coerce").dropna().median()
+                       if "자사몰행사가" in s_hit.columns else None),
             "현재고": _qty, "총입고량": _inb, "판매량": _sold,
             "입고추정": _inb > _inb_hist,
             "회전율": (_sold / _inb) if _inb else None,
@@ -793,12 +815,19 @@ with cols[5]:
     # 등급은 최근 실적만 본다. 표본이 얇으면 기간을 3개월씩 늘려 잡는다.
     st.markdown(f"**상품등급** <span style='font-size:0.78rem;color:#888;font-weight:400'>"
                 f"({g_basis} 기준)</span>", unsafe_allow_html=True)
+    _ec율 = (stock_info or {}).get("EC행사수익률")
+    if _ec율 is not None and (pd.isna(_ec율) or abs(_ec율) > 5):
+        _ec율 = None                      # 이상값(수천 %) 은 표시하지 않는다
     if g_res:
         st.markdown(
             f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
             f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%"
             + (f" <span style='color:#999'>({g_n:,}건)</span>" if g_n <= GRADE_TARGET else "")
+            # 재고 파일 L열의 EC행사 수익률. 실제 판매 실적이 아니라
+            # 행사가 기준으로 계산된 값이라 이익율과 나란히 두고 비교한다.
+            + (f"<br>EC기준 수익율 <b style='color:#333'>{_ec율 * 100:.1f}%</b>"
+               if _ec율 is not None else "")
             + "</span></div>",
             unsafe_allow_html=True)
     else:
@@ -840,6 +869,7 @@ with cols[5]:
             + (f"최근입고 <b>{int(_r)}일 전</b>" if pd.notna(_r) else "최근입고 <b>-</b>")
             + (f"<br>✅ 완판까지 <b>{stock_info['완판일수']:,}일</b>"
                if stock_info.get("완판일수") is not None else "")
+            + _행사가표시(stock_info)
             + ("<br><span style='color:#999;font-size:0.75rem'>* 입고이력 누락분 보정(판매+재고)</span>"
                if stock_info.get("입고추정") else "")
             + "</div>", unsafe_allow_html=True)
@@ -1013,6 +1043,9 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     d = load_all_data(file_sigs, mall_sig)
     d = 온라인만(d)                                   # 등급은 온라인 실적만
     d = d[d["연도"].isin([2024, 2025, 2026])]
+    d = d[d[COL_QTY] > 0]                            # 수량 0 건 제외
+    if COL_BRAND in d.columns:                       # 리퍼는 등급 대상이 아니다
+        d = d[d[COL_BRAND].astype(str).str.strip() != "리퍼"]
     if d.empty:
         return pd.DataFrame()
 
@@ -1035,6 +1068,10 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
                          d[COL_DATE].values.astype("datetime64[ns]"), side="right")
     d = d.assign(구간=len(경계) - 구간)                # 0 = 최근 3개월
     d["구간"] = d["구간"].clip(0, len(경계))
+
+    브랜드표 = (d.groupby("라인명", observed=True)[COL_BRAND]
+              .agg(lambda x: x.astype(str).mode().iat[0] if len(x) else "")
+              if COL_BRAND in d.columns else None)
 
     합 = (d.groupby(["라인명", "구간"], observed=True)
           .agg(건수=(COL_QTY, "size"), 수량=(COL_QTY, "sum"),
@@ -1073,7 +1110,9 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
 
     표["등급"] = 표.apply(_등급, axis=1)
     표["이익율(%)"] = 표["이익율(%)"].round(2)
-    표 = 표[["라인명", "등급", "이익율(%)", "수량", "건수", "기준기간"]]
+    표["브랜드"] = (표["라인명"].map(브랜드표) if 브랜드표 is not None else "")
+    표 = 표[표["수량"] > 0]                            # 기간 내 판매가 없으면 뺀다
+    표 = 표[["라인명", "브랜드", "등급", "이익율(%)", "수량", "건수", "기준기간"]]
     표["_ord"] = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)}).fillna(99)
     return (표.sort_values(["_ord", "수량"], ascending=[True, False])
             .drop(columns=["_ord"]).reset_index(drop=True))
