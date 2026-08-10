@@ -549,12 +549,16 @@ if not query.strip():
     st.stop()
 
 # 검색: 고유 모델명(카테고리)에서 먼저 매칭 → 속도/메모리 절약
-terms = [t.upper() for t in query.strip().split()]
+#
+# 입력을 공백으로 쪼개 각각 찾으면 토큰이 서로의 일부일 때 엉뚱하게 넓어진다.
+#   "FAW035A 00198 001" 의 '001' 이 앞의 '00198' 에 걸려 색상 6종이 다 잡힘
+# → 입력 전체를 한 덩어리로 보고 포함 검색한다.
+#   앞부분만 넣으면(예: "FAW035A 00198") 관련 상품이 전부 나온다.
+QUERY = re.sub(r"\s+", " ", query.strip()).upper()
+terms = [QUERY]                       # 재고·이미지 매칭도 같은 기준을 쓴다
 cats = df[COL_MODEL].cat.categories
 cats_up = cats.astype(str).str.upper()
-hit_mask = np.ones(len(cats), dtype=bool)
-for t in terms:
-    hit_mask &= np.asarray(cats_up.str.contains(re.escape(t), na=False, regex=True), dtype=bool)
+hit_mask = np.asarray(cats_up.str.contains(re.escape(QUERY), na=False, regex=True), dtype=bool)
 matched = set(cats[hit_mask])
 
 if not matched:
@@ -643,9 +647,8 @@ _RX_IN = re.compile(r"(\d+)일전/(\d+)")
 stock_df = load_stock(get_stock_sig())
 stock_info, inbound_by_year = None, {}
 if stock_df is not None:
-    smask = pd.Series(True, index=stock_df.index)
-    for t in terms:
-        smask &= stock_df["모델명_U"].str.contains(re.escape(t), na=False, regex=True)
+    # 매출 검색과 같은 기준 (입력 전체를 한 덩어리로 포함 검색)
+    smask = stock_df["모델명_U"].str.contains(re.escape(QUERY), na=False, regex=True)
     s_hit = stock_df[smask]
     if not s_hit.empty:
         _qty = int(s_hit["수량"].sum())
