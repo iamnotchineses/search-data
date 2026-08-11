@@ -396,6 +396,10 @@ def load_all_data(file_sigs: tuple, mall_sig=None) -> pd.DataFrame:
         # 수수료액 컬럼 자체가 없으면 예전 방식 그대로
         df["정산금"] = df["정산금_수익"]
 
+    # 정산금을 구하고 나면 원본 금액 컬럼은 쓸 일이 없다.
+    # float64 라 각각 8MB 씩 차지하므로 여기서 버린다.
+    df = df.drop(columns=[c for c in (COL_FEE, COL_SHIP) if c in df.columns])
+
     out = df.reset_index(drop=True)
     out.attrs["중복제거"] = 버린수
     return out
@@ -530,7 +534,8 @@ st.markdown(
     "<span style='color:#0969da;font-weight:700'>B</span> 15% 이상 · "
     "<span style='color:#bf8700;font-weight:700'>C</span> 5% 이상 · "
     "<span style='color:#d4691e;font-weight:700'>D</span> −5% 이상 · "
-    "<span style='color:#cf222e;font-weight:700'>E</span> −5% 미만<br>"
+    "<span style='color:#cf222e;font-weight:700'>E</span> −25% 이상 · "
+    "<span style='color:#7d1a1a;font-weight:700'>F</span> −25% 미만<br>"
     "· S 는 이익율 40% 이상 + 판매 20개 이상 + 매출 1,000만원 이상을 모두 만족해야 함<br>"
     "· 기간은 최근 3개월부터, 100건을 넘길 때까지 3개월씩 넓힘 (최대 24개월)<br>"
     "· 매장(오프라인) 판매는 등급·수익율에서 제외 (판매수량·판매금액에는 포함)<br>"
@@ -590,7 +595,8 @@ GRADE_S_SALES = 10_000_000   # 매출(원) 이상이면 S
 PROMO_SALES = 100_000_000
 PROMO_MONTHS = 12
 GRADE_CUTS = [(25, "A", "#1a7f37"), (15, "B", "#0969da"),
-              (5, "C", "#bf8700"), (-5, "D", "#d4691e")]
+              (5, "C", "#bf8700"), (-5, "D", "#d4691e"), (-25, "E", "#cf222e")]
+GRADE_LAST = ("F", "#7d1a1a")      # -25% 미만
 
 def grade_of(sub: pd.DataFrame):
     # 이익율은 온라인만으로 낸다 (매장은 수수료·배송비 구조가 달라 수익율이 부정확).
@@ -607,7 +613,7 @@ def grade_of(sub: pd.DataFrame):
     for cut, gr, color in GRADE_CUTS:
         if rate >= cut:
             return (gr, color), rate
-    return ("E", "#cf222e"), rate
+    return GRADE_LAST, rate
 
 # ── 등급 산출 범위 ────────────────────────────────────
 # 최근 3개월부터 보되, 표본이 얇으면 3개월씩 뒤로 늘려간다.
@@ -747,9 +753,9 @@ if stock_df is not None:
 # 등급 보정 두 가지를 합쳐서 한 번에 적용한다.
 #   · 최근 1년 매출이 1억 이상이면      한 등급 올림
 #   · 남은 재고가 300일 지날 때마다     한 등급씩 내림 (600일=2등급 ...)
-GRADE_ORDER = ["S", "A", "B", "C", "D", "E"]
+GRADE_ORDER = ["S", "A", "B", "C", "D", "E", "F"]
 GRADE_COLORS = {"S": "#7c3aed", "A": "#1a7f37", "B": "#0969da",
-                "C": "#bf8700", "D": "#d4691e", "E": "#cf222e"}
+                "C": "#bf8700", "D": "#d4691e", "E": "#cf222e", "F": "#7d1a1a"}
 
 # 승급 판단은 실제 매출 규모를 보는 것이므로 매장(오프라인)도 포함한다
 _최근1년매출 = float(
@@ -1148,7 +1154,7 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
         for cut, gr, _ in GRADE_CUTS:
             if v >= cut:
                 return gr
-        return "E"
+        return GRADE_LAST[0]
 
     표["등급"] = 표.apply(_등급, axis=1)
 
