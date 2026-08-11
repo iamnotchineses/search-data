@@ -308,8 +308,19 @@ def _read_one(path: str) -> pd.DataFrame:
 
 
 def _키해시(df: pd.DataFrame):
-    """주문번호+모델명을 64비트 숫자로. (문자열을 그대로 들고 있으면 메모리를 크게 먹는다)"""
-    키 = df[COL_ORDER].astype(str) + "\x00" + df[COL_MODEL].astype(str)
+    """주문번호+모델명+수량부호를 64비트 숫자로.
+
+    수량 부호를 넣는 이유:
+      같은 주문의 원매출(+)과 반품(−)이 서로 다른 파일에 나뉘어 들어간다.
+      (2025년 판매분의 반품이 2026년 파일 추출 때 잡히는 식)
+      부호를 빼고 키를 잡으면 둘이 '같은 주문'으로 보여 원매출이 지워지고
+      반품 행만 남는다. 그러면 '음수 수량이면 원매출까지 같이 제거' 하는
+      반품 처리가 짝을 못 찾는다.
+    문자열을 그대로 들고 있으면 메모리를 크게 먹으므로 해시로 줄인다.
+    """
+    부호 = np.where(pd.to_numeric(df[COL_QTY], errors="coerce").fillna(0) < 0, "-", "+")
+    키 = (df[COL_ORDER].astype(str) + "\x00" + df[COL_MODEL].astype(str)
+          + "\x00" + pd.Series(부호, index=df.index))
     return pd.util.hash_pandas_object(키, index=False).to_numpy()
 
 
