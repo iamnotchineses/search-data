@@ -550,6 +550,7 @@ st.markdown(
     "· S 는 이익율 40% 이상 + 판매 20개 이상 + 매출 1,000만원 이상을 모두 만족해야 함<br>"
     "· 기간은 최근 3개월부터, 100건을 넘길 때까지 3개월씩 넓힘 (최대 24개월)<br>"
     "· 매장(오프라인) 판매는 등급·수익율에서 제외 (판매수량·판매금액에는 포함)<br>"
+    "· <b>최근 300일간 판매가 없으면 이익율과 무관하게 D 에서 시작</b><br>"
     "· <b>최근 1년 매출 1억 이상이면 한 등급 상향</b><br>"
     "· 남은 재고 중 가장 오래된 것이 300일 지날 때마다 한 등급씩 강등"
     "</div>", unsafe_allow_html=True)
@@ -605,6 +606,11 @@ GRADE_S_SALES = 10_000_000   # 매출(원) 이상이면 S
 # 이익율이 조금 낮아도 회사에 큰 돈을 벌어다 주는 라인을 챙기기 위한 보정.
 PROMO_SALES = 100_000_000
 PROMO_MONTHS = 12
+
+# 이 기간 동안 한 건도 안 팔렸으면 이익율과 무관하게 이 등급에서 시작한다.
+# (오래전 실적이 좋았다고 지금 잘 팔리는 상품처럼 보이면 안 되므로)
+NOSALE_DAYS = 300
+NOSALE_GRADE = "D"
 GRADE_CUTS = [(25, "A", "#1a7f37"), (15, "B", "#0969da"),
               (5, "C", "#bf8700"), (-5, "D", "#d4691e"), (-25, "E", "#cf222e")]
 GRADE_LAST = ("F", "#7d1a1a")      # -25% 미만
@@ -773,6 +779,13 @@ _최근1년매출 = float(
     hit.loc[hit[COL_DATE] >= _g_today - pd.DateOffset(months=PROMO_MONTHS), COL_PRICE].sum())
 promote_steps = 1 if _최근1년매출 >= PROMO_SALES else 0
 
+# 최근 300일간 판매가 한 건도 없으면 D 에서 시작 (매장 판매도 판매로 친다)
+_마지막판매 = hit[COL_DATE].max() if not hit.empty else pd.NaT
+_무판매일수 = int((_g_today - _마지막판매).days) if pd.notna(_마지막판매) else None
+잠자는상품 = _무판매일수 is not None and _무판매일수 > NOSALE_DAYS
+if g_res and 잠자는상품:
+    g_res = (NOSALE_GRADE, GRADE_COLORS[NOSALE_GRADE])
+
 demote_steps = 0
 if g_res and stock_info and stock_info.get("최초입고") is not None:
     demote_steps = int(stock_info["최초입고"] // 300)
@@ -877,6 +890,8 @@ with cols[5]:
             # 행사가 기준으로 계산된 값이라 이익율과 나란히 두고 비교한다.
             + (f"<br>EC기준 수익율 <b style='color:#333'>{_ec율 * 100:.1f}%</b>"
                if _ec율 is not None else "")
+            + (f"<br><span style='color:#d4691e'>💤 {_무판매일수:,}일째 판매 없음 "
+               f"→ {NOSALE_GRADE} 에서 시작</span>" if 잠자는상품 else "")
             + (f"<br><span style='color:#1a7f37'>⬆ 최근 1년 매출 "
                f"{_최근1년매출 / 1e8:.1f}억 → +{promote_steps}등급</span>"
                if promote_steps else "")
@@ -1169,6 +1184,12 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
 
     표["등급"] = 표.apply(_등급, axis=1)
 
+    # 최근 300일간 판매가 없으면 이익율과 무관하게 D 에서 시작
+    마지막 = d.groupby("라인명", observed=True)[COL_DATE].max()
+    표["무판매일수"] = (끝 - 표["라인명"].map(마지막)).dt.days
+    잠 = 표["무판매일수"] > NOSALE_DAYS
+    표.loc[잠 & 표["등급"].isin(GRADE_ORDER), "등급"] = NOSALE_GRADE
+
     # 최근 1년 매출 1억 이상이면 한 등급 올림.
     # 구간 3 = 12개월 (0=3, 1=6, 2=9, 3=12개월). 그 칸의 누적 매출을 본다.
     칸목록 = list(누적["매출"].columns)
@@ -1186,7 +1207,7 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     표["매출"] = 표["매출"].round(0)
     표["최근1년매출"] = 표["최근1년매출"].round(0)
     표 = 표[["라인명", "브랜드", "등급", "이익율(%)", "수량", "매출",
-           "최근1년매출", "건수", "기준기간"]]
+           "최근1년매출", "무판매일수", "건수", "기준기간"]]
     표["_ord"] = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)}).fillna(99)
     return (표.sort_values(["_ord", "수량"], ascending=[True, False])
             .drop(columns=["_ord"]).reset_index(drop=True))
