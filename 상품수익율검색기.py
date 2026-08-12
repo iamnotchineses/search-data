@@ -550,7 +550,8 @@ st.markdown(
     "· S 는 이익율 40% 이상 + 판매 20개 이상 + 매출 1,000만원 이상을 모두 만족해야 함<br>"
     "· 기간은 최근 3개월부터, 100건을 넘길 때까지 3개월씩 넓힘 (최대 24개월)<br>"
     "· 매장(오프라인) 판매는 등급·수익율에서 제외 (판매수량·판매금액에는 포함)<br>"
-    "· <b>판매 이력이 하나도 없는데 재고만 300일 넘게 묵었으면 D</b> "
+    "· <b>판매 이력이 없는 재고는 묵은 기간으로 등급</b> — "
+    "100일 B · 200일 C · 300일 D · 400일 E · 500일~ F "
     "<span style='color:#888'>(한 번이라도 팔렸으면 그 실적으로 산출)</span><br>"
     "· <b>최근 1년 매출 1억 이상이면 한 등급 상향</b><br>"
     "· 남은 재고 중 가장 오래된 것이 300일 지날 때마다 한 등급씩 강등"
@@ -608,11 +609,20 @@ GRADE_S_SALES = 10_000_000   # 매출(원) 이상이면 S
 PROMO_SALES = 100_000_000
 PROMO_MONTHS = 12
 
-# 재고가 이 일수를 넘겼는데 판매 이력이 '하나도' 없으면 이 등급으로 본다.
+# 판매 이력이 '하나도' 없는 재고는 묵은 기간만으로 등급을 매긴다.
+#   100~199일 → B · 200~299일 → C · 300~399일 → D · 400~499일 → E · 500일~ → F
 # 팔린 적이 있으면 (400일 전이라도) 그 실적으로 정상 산출한다.
 # 판매 여부는 온라인 기준 — 매장은 수익율에서 빼는 것과 같은 이유로 제외.
-NOSALE_DAYS = 300
-NOSALE_GRADE = "D"
+NOSALE_DAYS = 100        # 이 일수부터 등급을 매기기 시작
+NOSALE_STEP = 100        # 이 일수마다 한 등급씩
+NOSALE_GRADE = "B"       # 시작 등급
+
+
+def 안팔린재고등급(재고나이) -> str:
+    """판매 이력 없는 재고의 등급. 100일마다 한 칸씩 내려간다."""
+    단계 = int(재고나이) // NOSALE_STEP - 1          # 100일 → 0칸
+    i = GRADE_ORDER.index(NOSALE_GRADE) + max(단계, 0)
+    return GRADE_ORDER[min(i, len(GRADE_ORDER) - 1)]
 GRADE_CUTS = [(25, "A", "#1a7f37"), (15, "B", "#0969da"),
               (5, "C", "#bf8700"), (-5, "D", "#d4691e"), (-25, "E", "#cf222e")]
 GRADE_LAST = ("F", "#7d1a1a")      # -25% 미만
@@ -781,21 +791,19 @@ _최근1년매출 = float(
     hit.loc[hit[COL_DATE] >= _g_today - pd.DateOffset(months=PROMO_MONTHS), COL_PRICE].sum())
 promote_steps = 1 if _최근1년매출 >= PROMO_SALES else 0
 
-# 판매 이력이 하나도 없는데 재고만 300일 넘게 묵어 있으면 D.
+# 판매 이력이 하나도 없는 재고는 묵은 기간만으로 등급을 매긴다 (100일마다 한 칸).
 # 팔린 적이 있으면 오래됐어도 그 실적으로 정상 산출한다.
 _재고나이 = (stock_info or {}).get("최초입고")
 _판매이력없음 = 온라인만(hit).empty
-안팔린재고 = bool(_판매이력없음 and _재고나이 is not None and _재고나이 > NOSALE_DAYS)
+안팔린재고 = bool(_판매이력없음 and _재고나이 is not None and _재고나이 >= NOSALE_DAYS)
 if 안팔린재고:
-    g_res = (NOSALE_GRADE, GRADE_COLORS[NOSALE_GRADE])
+    _g = 안팔린재고등급(_재고나이)
+    g_res = (_g, GRADE_COLORS[_g])
 
 demote_steps = 0
-if g_res and stock_info and stock_info.get("최초입고") is not None:
+if g_res and not 안팔린재고 and stock_info and stock_info.get("최초입고") is not None:
+    # 안팔린재고는 위 사다리(100일마다)에 재고 나이가 이미 반영돼 있어 또 깎지 않는다
     demote_steps = int(stock_info["최초입고"] // 300)
-    if 안팔린재고:
-        # 300일 시점에 이미 D 를 줬으므로, 그 다음 300일부터 추가로 깎는다
-        #   300~599일 → D · 600~899일 → E · 900~1199일 → F ...
-        demote_steps -= 1
 
 if g_res and (promote_steps or demote_steps):
     _i0 = GRADE_ORDER.index(g_res[0])
@@ -901,7 +909,7 @@ with cols[5]:
             + (f"<br>EC기준 수익율 <b style='color:#333'>{_ec율 * 100:.1f}%</b>"
                if _ec율 is not None else "")
             + (f"<br><span style='color:#d4691e'>💤 판매 이력 없이 재고만 "
-               f"{int(_재고나이):,}일 → {NOSALE_GRADE}</span>" if 안팔린재고 else "")
+               f"{int(_재고나이):,}일 → {g_res[0]}</span>" if 안팔린재고 else "")
             + (f"<br><span style='color:#1a7f37'>⬆ 최근 1년 매출 "
                f"{_최근1년매출 / 1e8:.1f}억 → +{promote_steps}등급</span>"
                if promote_steps else "")
@@ -1203,8 +1211,9 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
         재고나이 = (s.groupby(s["라인명"].astype(str).str.strip(), observed=True)["입고경과일"]
                  .max())
     표["재고일수"] = (표["라인명"].map(재고나이) if 재고나이 is not None else pd.NA)
-    안팔림 = (표["온라인건수"] == 0) & (pd.to_numeric(표["재고일수"], errors="coerce") > NOSALE_DAYS)
-    표.loc[안팔림, "등급"] = NOSALE_GRADE
+    _나이 = pd.to_numeric(표["재고일수"], errors="coerce")
+    안팔림 = (표["온라인건수"] == 0) & (_나이 >= NOSALE_DAYS)
+    표.loc[안팔림, "등급"] = _나이[안팔림].map(안팔린재고등급)
 
     # 최근 1년 매출 1억 이상이면 한 등급 올림.
     # 구간 3 = 12개월 (0=3, 1=6, 2=9, 3=12개월). 그 칸의 누적 매출을 본다.
