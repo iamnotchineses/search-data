@@ -547,7 +547,8 @@ st.markdown(
     "<span style='color:#d4691e;font-weight:700'>D</span> −5% 이상 · "
     "<span style='color:#cf222e;font-weight:700'>E</span> −25% 이상 · "
     "<span style='color:#7d1a1a;font-weight:700'>F</span> −25% 미만<br>"
-    "· S 는 이익율 40% 이상 + 판매 20개 이상 + 매출 1,000만원 이상을 모두 만족해야 함<br>"
+    "· S 는 이익율 40% 이상이면서 "
+    "매출 1,500만원 이상 <b>또는</b> (판매 30개 이상 + 매출 1,000만원 이상)<br>"
     "· 기간은 최근 3개월부터, 100건을 넘길 때까지 3개월씩 넓힘 (최대 24개월)<br>"
     "· 매장(오프라인) 판매는 등급·수익율에서 제외 (판매수량·판매금액에는 포함)<br>"
     "· <b>판매 이력이 없는 재고는 묵은 기간으로 등급</b> — "
@@ -611,9 +612,20 @@ def 온라인만(sub: pd.DataFrame) -> pd.DataFrame:
 # 상품등급: 이익율(수익 ÷ 정산금) 기준 S~E
 # S 는 이익율만으로 주지 않는다. 몇 개 안 팔린 상품이 이익율만 높아
 # 최고 등급을 받는 걸 막기 위해 판매수량 조건을 같이 건다.
-GRADE_S_RATE = 40            # 이익율(%) 이상이고
-GRADE_S_QTY = 20             # 판매수량(개) 이상이고
-GRADE_S_SALES = 10_000_000   # 매출(원) 이상이면 S
+GRADE_S_RATE = 40                # 이익율(%)은 무조건 이 이상이어야 하고,
+GRADE_S_SALES = 15_000_000       # 매출이 이만큼이면 수량 상관없이 S
+GRADE_S_QTY = 30                 # 아니면 수량이 이 이상이면서
+GRADE_S_QTY_MIN_SALES = 10_000_000   # 매출도 이 이상이어야 S
+# 수량 쪽에 매출 하한을 둔 이유:
+#   쇼핑백·사은품처럼 원가가 없어 이익율 100% 로 잡히는 것들이
+#   개수만으로 최고 등급을 받는 걸 막는다.
+
+
+def _S조건(이익율, 수량, 매출) -> bool:
+    if 이익율 < GRADE_S_RATE:
+        return False
+    return (매출 >= GRADE_S_SALES
+            or (수량 >= GRADE_S_QTY and 매출 >= GRADE_S_QTY_MIN_SALES))
 
 # 최근 1년 매출이 이 금액을 넘으면 한 등급 올려준다.
 # 이익율이 조금 낮아도 회사에 큰 돈을 벌어다 주는 라인을 챙기기 위한 보정.
@@ -646,9 +658,7 @@ def grade_of(sub: pd.DataFrame):
     if on.empty or settle <= 0:
         return None, None
     rate = on[COL_PROFIT].sum() / settle * 100
-    if (rate >= GRADE_S_RATE
-            and sub[COL_QTY].sum() >= GRADE_S_QTY
-            and sub[COL_PRICE].sum() >= GRADE_S_SALES):
+    if _S조건(rate, sub[COL_QTY].sum(), sub[COL_PRICE].sum()):
         return ("S", "#7c3aed"), rate
     for cut, gr, color in GRADE_CUTS:
         if rate >= cut:
@@ -1204,8 +1214,7 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
         v = r["이익율(%)"]
         if pd.isna(v) or r["정산금"] <= 0:
             return "-"
-        if (v >= GRADE_S_RATE and r["수량"] >= GRADE_S_QTY
-                and r["매출"] >= GRADE_S_SALES):
+        if _S조건(v, r["수량"], r["매출"]):
             return "S"
         for cut, gr, _ in GRADE_CUTS:
             if v >= cut:
