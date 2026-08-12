@@ -580,11 +580,22 @@ cats_up = cats.astype(str).str.upper()
 hit_mask = np.asarray(cats_up.str.contains(re.escape(QUERY), na=False, regex=True), dtype=bool)
 matched = set(cats[hit_mask])
 
-if not matched:
-    st.warning(f"'{query}' 검색 결과가 없습니다.")
-    st.stop()
-
-hit = df[df[COL_MODEL].isin(matched)]
+if matched:
+    hit = df[df[COL_MODEL].isin(matched)]
+else:
+    # 매출에 없으면 재고에서 찾아본다.
+    # 한 번도 안 팔린 상품은 매출 파일에 아예 행이 없어서, 예전에는
+    # '검색 결과 없음'으로 끝나 재고가 쌓여 있어도 보이지 않았다.
+    _s = load_stock(get_stock_sig())
+    _재고모델 = ([] if _s is None else
+              sorted(_s.loc[_s["모델명_U"].str.contains(re.escape(QUERY), na=False),
+                            "모델명"].astype(str).unique()))
+    if not _재고모델:
+        st.warning(f"'{query}' 검색 결과가 없습니다. (매출·재고 모두에 없음)")
+        st.stop()
+    matched = set(_재고모델)
+    hit = df.iloc[0:0]                     # 판매 0건 — 아래 집계는 모두 빈 값이 된다
+    st.info(f"판매 기록이 없는 상품입니다. 재고 {len(_재고모델)}개 모델이 검색됐습니다.")
 
 brands = [str(b) for b in hit[COL_BRAND].dropna().unique()[:5]]
 
@@ -979,8 +990,9 @@ tot = tot[::-1][(tot[::-1].cumsum() > 0)][::-1]
 used = list(tot.index)
 
 # 연도 간 y축 통일: 전체 연도에서 구간별 최대 판매수량
-y_max = int((hit_b[hit_b["구간"].isin(used)]
-             .groupby(["연도", "구간"], observed=True)[COL_QTY].sum().max() or 0))
+_ymax = (hit_b[hit_b["구간"].isin(used)]
+         .groupby(["연도", "구간"], observed=True)[COL_QTY].sum().max())
+y_max = 0 if pd.isna(_ymax) else int(_ymax)     # 판매 0건이면 NaN 이 나온다
 
 chart_cols = st.columns(len(years))
 for col, yr in zip(chart_cols, years):
@@ -1233,6 +1245,30 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     표["최근1년매출"] = 표["최근1년매출"].round(0)
     표 = 표[["라인명", "브랜드", "등급", "이익율(%)", "수량", "매출",
            "최근1년매출", "건수", "기준기간"]]
+    # 한 번도 안 팔린 재고는 매출 파일에 행이 없어 위 집계에 안 잡힌다.
+    # 재고 파일에만 있는 라인을 찾아 '재고 나이 사다리' 등급으로 채워 넣는다.
+    if s is not None and {"라인명", "입고경과일"} <= set(s.columns):
+        재고라인 = (s.assign(_L=s["라인명"].astype(str).str.strip())
+                 .groupby("_L", observed=True)
+                 .agg(재고일수=("입고경과일", "max"),
+                      브랜드=(COL_BRAND, lambda x: x.astype(str).mode().iat[0] if len(x) else ""))
+                 if COL_BRAND in s.columns else
+                 s.assign(_L=s["라인명"].astype(str).str.strip())
+                 .groupby("_L", observed=True).agg(재고일수=("입고경과일", "max")))
+        빠진것 = 재고라인.loc[~재고라인.index.isin(set(표["라인명"]))].copy()
+        빠진것 = 빠진것[pd.to_numeric(빠진것["재고일수"], errors="coerce") >= NOSALE_DAYS]
+        if "브랜드" in 빠진것.columns:      # 판매분과 같은 기준으로 리퍼 제외
+            빠진것 = 빠진것[빠진것["브랜드"].astype(str).str.strip() != "리퍼"]
+        if len(빠진것):
+            추가 = pd.DataFrame({
+                "라인명": 빠진것.index.astype(str),
+                "브랜드": 빠진것["브랜드"].values if "브랜드" in 빠진것 else "",
+                "등급": pd.to_numeric(빠진것["재고일수"]).map(안팔린재고등급).values,
+                "이익율(%)": np.nan, "수량": 0, "매출": 0.0,
+                "최근1년매출": 0.0, "건수": 0, "기준기간": "판매 없음",
+            })
+            표 = pd.concat([표, 추가], ignore_index=True)
+
     표["_ord"] = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)}).fillna(99)
     return (표.sort_values(["_ord", "수량"], ascending=[True, False])
             .drop(columns=["_ord"]).reset_index(drop=True))
