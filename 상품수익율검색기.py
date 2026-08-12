@@ -790,9 +790,12 @@ if 안팔린재고:
     g_res = (NOSALE_GRADE, GRADE_COLORS[NOSALE_GRADE])
 
 demote_steps = 0
-if g_res and not 안팔린재고 and stock_info and stock_info.get("최초입고") is not None:
-    # 안팔린재고로 이미 D 를 준 경우엔 같은 재고 나이로 또 깎지 않는다
+if g_res and stock_info and stock_info.get("최초입고") is not None:
     demote_steps = int(stock_info["최초입고"] // 300)
+    if 안팔린재고:
+        # 300일 시점에 이미 D 를 줬으므로, 그 다음 300일부터 추가로 깎는다
+        #   300~599일 → D · 600~899일 → E · 900~1199일 → F ...
+        demote_steps -= 1
 
 if g_res and (promote_steps or demote_steps):
     _i0 = GRADE_ORDER.index(g_res[0])
