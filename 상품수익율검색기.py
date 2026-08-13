@@ -712,7 +712,6 @@ if _g_base.empty:
 
 g_res, g_rate = grade_of(_g_base)
 g_n = len(_g_base)
-_g_매출 = float(_g_base[COL_PRICE].sum()) if len(_g_base) else 0.0   # 등급 기간의 매출
 
 # ── 재고 매칭 (등급 밑 표시 + 연도별 입고 역산) ──
 _RX_IN = re.compile(r"(\d+)일전/(\d+)")
@@ -940,9 +939,7 @@ with cols[5]:
         st.markdown(
             f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
-            # 이익율 옆 매출은 등급을 낸 그 기간의 금액 (S 조건이 이 값으로 판정된다)
             + (f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%"
-               f" · 매출 {fmt_won_short(_g_매출)}"
                if g_rate is not None
                else " <span style='font-size:0.8rem;color:#999'>온라인 판매 없어 이익율 산출 불가")
             + (f" <span style='color:#999'>({g_n:,}건)</span>"
