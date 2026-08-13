@@ -427,6 +427,18 @@ def fmt_pct(v):
     return "-" if v is None or pd.isna(v) else f"{v:.2f}%"
 
 
+def fmt_won_short(v):
+    """좁은 칸에 들어가도록 억/만 단위로 줄여 쓴다."""
+    if v is None or pd.isna(v):
+        return "-"
+    v = float(v)
+    if abs(v) >= 1e8:
+        return f"{v / 1e8:,.2f}억"
+    if abs(v) >= 1e4:
+        return f"{v / 1e4:,.0f}만"
+    return f"{v:,.0f}원"
+
+
 WON = st.column_config.NumberColumn(format="localized")
 NUM = st.column_config.NumberColumn(format="localized")
 
@@ -697,6 +709,7 @@ if _g_base.empty:
 
 g_res, g_rate = grade_of(_g_base)
 g_n = len(_g_base)
+_g_매출 = float(_g_base[COL_PRICE].sum()) if len(_g_base) else 0.0   # 등급 기간의 매출
 
 # ── 재고 매칭 (등급 밑 표시 + 연도별 입고 역산) ──
 _RX_IN = re.compile(r"(\d+)일전/(\d+)")
@@ -842,7 +855,7 @@ st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 ·
 def agg_stats(sub: pd.DataFrame) -> dict:
     if sub.empty:
         return {"수량": 0, "수익율": None, "평균정산금": None, "이익율": None,
-                "매장수량": 0}
+                "매장수량": 0, "매출": 0.0}
     qty = sub[COL_QTY].sum()
     settle = sub["정산금"].sum()          # 배송비 차감 안 한 금액 (표시용)
 
@@ -854,6 +867,8 @@ def agg_stats(sub: pd.DataFrame) -> dict:
 
     return {"수량": int(qty),
             "매장수량": int(sub.loc[sub["매장"], COL_QTY].sum()) if "매장" in sub.columns else 0,
+            # 매출은 매장 포함 (실제로 판 금액)
+            "매출": float(sub[COL_PRICE].sum()),
             # 수익율 = 수익 ÷ 판매가   (고객이 낸 돈 대비)
             "수익율": (profit_on / sales_on * 100) if sales_on else None,
             # 이익율 = 수익 ÷ 정산금(배송비 차감)  — 상품등급과 같은 산식
@@ -886,6 +901,7 @@ for col, (label, sub) in zip(cols, periods):
         if s["수량"]:
             st.markdown(f"**{label}**")
             st.caption(f"{inb_label} {inb_txt}개 / 판매 {s['수량']:,}개")
+            st.metric("매출", fmt_won_short(s["매출"]))
             st.metric("평균 수익율", fmt_pct(s["수익율"]))
             # 정산금·이익율은 st.metric 두 개를 나란히 놓으면 칸을 넘쳐 글자가 겹친다.
             # → 한 줄에 작게 (이익율은 상품등급과 같은 산식: 수익 ÷ 정산금)
@@ -894,6 +910,7 @@ for col, (label, sub) in zip(cols, periods):
         else:
             st.markdown(f"**{label}**")
             st.caption(f"{inb_label} {inb_txt}개 / 판매 0개")
+            st.metric("매출", "-")
             st.metric("평균 수익율", "-")
             _한줄지표("평균 정산금", "-", "이익율", "-")
 
@@ -920,7 +937,9 @@ with cols[5]:
         st.markdown(
             f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
+            # 이익율 옆 매출은 등급을 낸 그 기간의 금액 (S 조건이 이 값으로 판정된다)
             + (f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%"
+               f" · 매출 {fmt_won_short(_g_매출)}"
                if g_rate is not None
                else " <span style='font-size:0.8rem;color:#999'>온라인 판매 없어 이익율 산출 불가")
             + (f" <span style='color:#999'>({g_n:,}건)</span>"
