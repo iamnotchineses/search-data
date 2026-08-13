@@ -566,7 +566,7 @@ st.markdown(
     "· <b>판매 이력이 없는 재고는 묵은 기간으로 등급</b> — "
     "100일 B · 200일 C · 300일 D · 400일 E · 500일~ F "
     "<span style='color:#888'>(한 번이라도 팔렸으면 그 실적으로 산출)</span><br>"
-    "· <b>최근 1년 매출 1억 이상이면 한 등급 상향</b><br>"
+    "· <b>최근 1년 매출 5,000만원 이상이면 한 등급 상향</b><br>"
     "· 남은 재고 중 가장 오래된 것이 300일 지날 때마다 한 등급씩 강등"
     "</div>", unsafe_allow_html=True)
 if mall_sig is None:
@@ -641,7 +641,7 @@ def _S조건(이익율, 수량, 매출) -> bool:
 
 # 최근 1년 매출이 이 금액을 넘으면 한 등급 올려준다.
 # 이익율이 조금 낮아도 회사에 큰 돈을 벌어다 주는 라인을 챙기기 위한 보정.
-PROMO_SALES = 100_000_000
+PROMO_SALES = 50_000_000
 PROMO_MONTHS = 12
 
 # 판매 이력이 '하나도' 없는 재고는 묵은 기간만으로 등급을 매긴다.
@@ -951,7 +951,7 @@ with cols[5]:
             + (f"<br><span style='color:#d4691e'>💤 판매 이력 없이 재고만 "
                f"{int(_재고나이):,}일 → {g_res[0]}</span>" if 안팔린재고 else "")
             + (f"<br><span style='color:#1a7f37'>⬆ 최근 1년 매출 "
-               f"{_최근1년매출 / 1e8:.1f}억 → +{promote_steps}등급</span>"
+               f"{fmt_won_short(_최근1년매출)} → +{promote_steps}등급</span>"
                if promote_steps else "")
             + "</span></div>",
             unsafe_allow_html=True)
