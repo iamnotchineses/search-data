@@ -696,11 +696,14 @@ _g_pool = (hit[hit["연도"].isin([2024, 2025, 2026])]
 # (파일 갱신이 하루이틀 늦어도 기준이 흔들리지 않게)
 _g_today = df[COL_DATE].max()
 
+# 기간을 넓힐 때 세는 건수는 '온라인' 기준이다.
+# 이익율의 표본이 온라인 판매이기 때문. (전체 등급표도 같은 기준)
+# 고른 기간의 행 자체는 매장까지 포함한다 — S 조건의 수량·매출은 매장 포함이므로.
 _g_base, g_basis = _g_pool, "전체"
 for _개월 in range(GRADE_STEP_MONTHS, GRADE_MAX_MONTHS + 1, GRADE_STEP_MONTHS):
     _g_base = _g_pool[_g_pool[COL_DATE] >= _g_today - pd.DateOffset(months=_개월)]
     g_basis = f"최근 {_개월}개월"
-    if len(_g_base) > GRADE_TARGET:
+    if len(온라인만(_g_base)) > GRADE_TARGET:
         break
 
 # 2년간 판매가 아예 없으면 그 기간으로는 등급을 못 매긴다 → 있는 것 전부로
@@ -1157,6 +1160,36 @@ st.divider()
 st.subheader("🏅 전체 상품 등급")
 
 
+@st.cache_data(show_spinner=False)
+def 라인별_재고나이(stock_sig) -> pd.Series:
+    """라인명별 '가장 오래된 잔여재고'의 입고 경과일.
+
+    검색 화면의 stock_info['최초입고'] 와 같은 FIFO 계산을 전 품목에 대해 미리 해 둔다.
+    (입고경과일 컬럼은 '가장 최근 입고'라 값이 달라 등급이 어긋났다)
+    """
+    s = load_stock(stock_sig)
+    if s is None or "입고이력" not in s.columns:
+        return pd.Series(dtype="float64")
+    결과 = {}
+    for 라인, 수량, 이력 in zip(s["라인명"].astype(str).str.strip(),
+                            pd.to_numeric(s["수량"], errors="coerce").fillna(0).astype(int),
+                            s["입고이력"].astype(str)):
+        if 수량 <= 0:
+            continue
+        events = [(int(d), int(q)) for d, q in _RX_IN.findall(이력.replace(",", ""))]
+        if not events:
+            continue
+        remain, 마지막 = 수량, None
+        for d_, q_ in sorted(events):          # 최신(경과일 작은 것) → 과거
+            remain -= q_
+            마지막 = d_
+            if remain <= 0:
+                break
+        if 마지막 is not None:
+            결과[라인] = max(결과.get(라인, 0), 마지막)
+    return pd.Series(결과, dtype="float64")
+
+
 @st.cache_data(show_spinner="전체 등급 계산 중...")
 def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     """모든 라인명의 등급을 한 번에 계산한다.
@@ -1246,14 +1279,22 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     # (여기 표에 있는 라인 중에서는 '매장에서만 팔린' 경우가 이에 해당한다)
     온라인건수 = d[d["_온"] == 1].groupby("라인명", observed=True).size()
     표["온라인건수"] = 표["라인명"].map(온라인건수).fillna(0).astype(int)
-    재고나이 = None
-    if s is not None and {"라인명", "입고경과일"} <= set(s.columns):
-        재고나이 = (s.groupby(s["라인명"].astype(str).str.strip(), observed=True)["입고경과일"]
-                 .max())
-    표["재고일수"] = (표["라인명"].map(재고나이) if 재고나이 is not None else pd.NA)
+    # 검색 화면과 같은 FIFO 기준 (가장 오래된 잔여재고의 경과일)
+    재고나이 = 라인별_재고나이(stock_sig)
+    표["재고일수"] = 표["라인명"].map(재고나이) if len(재고나이) else pd.NA
     _나이 = pd.to_numeric(표["재고일수"], errors="coerce")
     안팔림 = (표["온라인건수"] == 0) & (_나이 >= NOSALE_DAYS)
     표.loc[안팔림, "등급"] = _나이[안팔림].map(안팔린재고등급)
+
+    # 남은 재고가 300일 지날 때마다 한 등급 강등 (검색 화면과 같은 규칙).
+    # 안팔린재고는 위 사다리에 재고 나이가 이미 반영돼 있으므로 제외한다.
+    _강등 = (pd.to_numeric(표["재고일수"], errors="coerce") // 300).fillna(0).astype(int)
+    _강등 = _강등.where(~안팔림, 0).clip(lower=0)
+    if (_강등 > 0).any():
+        자리 = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)})
+        갈곳 = (자리 + _강등).clip(upper=len(GRADE_ORDER) - 1)
+        바꿀것 = (_강등 > 0) & 자리.notna()
+        표.loc[바꿀것, "등급"] = 갈곳[바꿀것].map(lambda i: GRADE_ORDER[int(i)])
 
     # 최근 1년 매출 1억 이상이면 한 등급 올림.
     # 구간 3 = 12개월 (0=3, 1=6, 2=9, 3=12개월). 그 칸의 누적 매출을 본다.
@@ -1275,14 +1316,12 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
            "최근1년매출", "건수", "기준기간"]]
     # 한 번도 안 팔린 재고는 매출 파일에 행이 없어 위 집계에 안 잡힌다.
     # 재고 파일에만 있는 라인을 찾아 '재고 나이 사다리' 등급으로 채워 넣는다.
-    if s is not None and {"라인명", "입고경과일"} <= set(s.columns):
-        재고라인 = (s.assign(_L=s["라인명"].astype(str).str.strip())
-                 .groupby("_L", observed=True)
-                 .agg(재고일수=("입고경과일", "max"),
-                      브랜드=(COL_BRAND, lambda x: x.astype(str).mode().iat[0] if len(x) else ""))
-                 if COL_BRAND in s.columns else
-                 s.assign(_L=s["라인명"].astype(str).str.strip())
-                 .groupby("_L", observed=True).agg(재고일수=("입고경과일", "max")))
+    if s is not None and len(재고나이):
+        재고라인 = pd.DataFrame({"재고일수": 재고나이})
+        if COL_BRAND in s.columns:
+            재고라인["브랜드"] = (s.assign(_L=s["라인명"].astype(str).str.strip())
+                             .groupby("_L", observed=True)[COL_BRAND]
+                             .agg(lambda x: x.astype(str).mode().iat[0] if len(x) else ""))
         빠진것 = 재고라인.loc[~재고라인.index.isin(set(표["라인명"]))].copy()
         빠진것 = 빠진것[pd.to_numeric(빠진것["재고일수"], errors="coerce") >= NOSALE_DAYS]
         if "브랜드" in 빠진것.columns:      # 판매분과 같은 기준으로 리퍼 제외
