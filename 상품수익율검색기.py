@@ -1165,15 +1165,25 @@ def 라인별_재고나이(stock_sig) -> pd.Series:
     (입고경과일 컬럼은 '가장 최근 입고'라 값이 달라 등급이 어긋났다)
     """
     s = load_stock(stock_sig)
-    if s is None or "입고이력" not in s.columns:
+    if s is None or not {"라인명", "수량", "입고이력"} <= set(s.columns):
         return pd.Series(dtype="float64")
+
+    # 같은 이름의 컬럼이 두 개면 s["입고이력"] 이 DataFrame 으로 나온다.
+    # (재고 원본에 '입고이력' 이 I열·S열 두 군데 있다) → 첫 번째만 쓴다.
+    def _한줄(이름):
+        c = s[이름]
+        return c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c
+
+    rx = re.compile(r"(\d+)일전/(\d+)")        # 전역 변수에 기대지 않도록 여기서 정의
+    라인들 = _한줄("라인명").astype("object").map(lambda v: str(v).strip())
+    수량들 = pd.to_numeric(_한줄("수량"), errors="coerce").fillna(0).astype(int)
+    이력들 = _한줄("입고이력")
+
     결과 = {}
-    for 라인, 수량, 이력 in zip(s["라인명"].astype(str).str.strip(),
-                            pd.to_numeric(s["수량"], errors="coerce").fillna(0).astype(int),
-                            s["입고이력"].astype(str)):
+    for 라인, 수량, 이력 in zip(라인들, 수량들, 이력들):
         if 수량 <= 0:
             continue
-        events = [(int(d), int(q)) for d, q in _RX_IN.findall(이력.replace(",", ""))]
+        events = [(int(d), int(q)) for d, q in rx.findall(str(이력).replace(",", ""))]
         if not events:
             continue
         remain, 마지막 = 수량, None
