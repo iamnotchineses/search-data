@@ -567,7 +567,7 @@ st.markdown(
     "100일 B · 200일 C · 300일 D · 400일 E · 500일~ F "
     "<span style='color:#888'>(한 번이라도 팔렸으면 그 실적으로 산출)</span><br>"
     "· <b>최근 1년 매출 5,000만원 이상이면 한 등급 상향</b><br>"
-    "· 남은 재고 중 가장 오래된 것이 300일 지날 때마다 한 등급씩 강등"
+    "· 남은 재고 중 가장 오래된 것이 200일 지날 때마다 한 등급씩 강등"
     "</div>", unsafe_allow_html=True)
 if mall_sig is None:
     st.warning("몰분류 파일(*몰분류*.xlsx)이 없어 매장(오프라인) 판매를 구분하지 못했습니다. "
@@ -643,6 +643,9 @@ def _S조건(이익율, 수량, 매출) -> bool:
 # 이익율이 조금 낮아도 회사에 큰 돈을 벌어다 주는 라인을 챙기기 위한 보정.
 PROMO_SALES = 50_000_000
 PROMO_MONTHS = 12
+
+# 남은 재고 중 가장 오래된 것이 이 일수를 지날 때마다 한 등급씩 강등
+DEMOTE_DAYS = 200
 
 # 판매 이력이 '하나도' 없는 재고는 묵은 기간만으로 등급을 매긴다.
 #   100~199일 → B · 200~299일 → C · 300~399일 → D · 400~499일 → E · 500일~ → F
@@ -817,7 +820,7 @@ if stock_df is not None:
 
 # 등급 보정 두 가지를 합쳐서 한 번에 적용한다.
 #   · 최근 1년 매출이 1억 이상이면      한 등급 올림
-#   · 남은 재고가 300일 지날 때마다     한 등급씩 내림 (600일=2등급 ...)
+#   · 남은 재고가 200일 지날 때마다     한 등급씩 내림 (400일=2등급 ...)
 GRADE_ORDER = ["S", "A", "B", "C", "D", "E", "F"]
 GRADE_COLORS = {"S": "#7c3aed", "A": "#1a7f37", "B": "#0969da",
                 "C": "#bf8700", "D": "#d4691e", "E": "#cf222e", "F": "#7d1a1a"}
@@ -839,7 +842,7 @@ if 안팔린재고:
 demote_steps = 0
 if g_res and not 안팔린재고 and stock_info and stock_info.get("최초입고") is not None:
     # 안팔린재고는 위 사다리(100일마다)에 재고 나이가 이미 반영돼 있어 또 깎지 않는다
-    demote_steps = int(stock_info["최초입고"] // 300)
+    demote_steps = int(stock_info["최초입고"] // DEMOTE_DAYS)
 
 if g_res and (promote_steps or demote_steps):
     _i0 = GRADE_ORDER.index(g_res[0])
@@ -1282,7 +1285,7 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
 
     표["등급"] = 표.apply(_등급, axis=1)
 
-    # 판매 이력이 하나도 없는데 재고만 300일 넘게 묵어 있으면 D.
+    # 판매 이력이 하나도 없는 재고는 묵은 기간 사다리(100일마다)로 등급을 준다.
     # (여기 표에 있는 라인 중에서는 '매장에서만 팔린' 경우가 이에 해당한다)
     온라인건수 = d[d["_온"] == 1].groupby("라인명", observed=True).size()
     표["온라인건수"] = 표["라인명"].map(온라인건수).fillna(0).astype(int)
@@ -1293,9 +1296,9 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     안팔림 = (표["온라인건수"] == 0) & (_나이 >= NOSALE_DAYS)
     표.loc[안팔림, "등급"] = _나이[안팔림].map(안팔린재고등급)
 
-    # 남은 재고가 300일 지날 때마다 한 등급 강등 (검색 화면과 같은 규칙).
+    # 남은 재고가 DEMOTE_DAYS 마다 한 등급 강등 (검색 화면과 같은 규칙).
     # 안팔린재고는 위 사다리에 재고 나이가 이미 반영돼 있으므로 제외한다.
-    _강등 = (pd.to_numeric(표["재고일수"], errors="coerce") // 300).fillna(0).astype(int)
+    _강등 = (pd.to_numeric(표["재고일수"], errors="coerce") // DEMOTE_DAYS).fillna(0).astype(int)
     _강등 = _강등.where(~안팔림, 0).clip(lower=0)
     if (_강등 > 0).any():
         자리 = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)})
