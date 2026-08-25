@@ -567,7 +567,8 @@ st.markdown(
     "100일 B · 200일 C · 300일 D · 400일 E · 500일~ F "
     "<span style='color:#888'>(한 번이라도 팔렸으면 그 실적으로 산출)</span><br>"
     "· <b>최근 1년 매출 5,000만원 이상이면 한 등급 상향</b><br>"
-    "· 남은 재고 중 가장 오래된 것이 200일 지날 때마다 한 등급씩 강등"
+    "· 남은 재고 중 가장 오래된 것이 200일 지날 때마다 한 등급씩 강등<br>"
+    "· 다 팔린 상품은 <b>입고 → 마지막 판매</b>가 1년 지날 때마다 한 등급씩 강등"
     "</div>", unsafe_allow_html=True)
 if mall_sig is None:
     st.warning("몰분류 파일(*몰분류*.xlsx)이 없어 매장(오프라인) 판매를 구분하지 못했습니다. "
@@ -646,6 +647,9 @@ PROMO_MONTHS = 12
 
 # 남은 재고 중 가장 오래된 것이 이 일수를 지날 때마다 한 등급씩 강등
 DEMOTE_DAYS = 200
+# 다 팔린 상품은 재고가 없어 위 기준을 못 쓴다.
+# 대신 '입고 → 마지막 판매' 에 걸린 기간으로 본다. 이 일수마다 한 등급씩 강등.
+SELLOUT_DEMOTE_DAYS = 365
 
 # 판매 이력이 '하나도' 없는 재고는 묵은 기간만으로 등급을 매긴다.
 #   100~199일 → B · 200~299일 → C · 300~399일 → D · 400~499일 → E · 500일~ → F
@@ -839,10 +843,16 @@ if 안팔린재고:
     _g = 안팔린재고등급(_재고나이)
     g_res = (_g, GRADE_COLORS[_g])
 
-demote_steps = 0
-if g_res and not 안팔린재고 and stock_info and stock_info.get("최초입고") is not None:
+demote_steps, 강등사유 = 0, ""
+if g_res and not 안팔린재고 and stock_info:
     # 안팔린재고는 위 사다리(100일마다)에 재고 나이가 이미 반영돼 있어 또 깎지 않는다
-    demote_steps = int(stock_info["최초입고"] // DEMOTE_DAYS)
+    if stock_info.get("최초입고") is not None:
+        demote_steps = int(stock_info["최초입고"] // DEMOTE_DAYS)
+        강등사유 = f"재고 {int(stock_info['최초입고']):,}일"
+    elif stock_info.get("완판일수") is not None:
+        # 다 팔렸으면 파는 데 걸린 기간으로 본다
+        demote_steps = int(stock_info["완판일수"] // SELLOUT_DEMOTE_DAYS)
+        강등사유 = f"완판까지 {int(stock_info['완판일수']):,}일"
 
 if g_res and (promote_steps or demote_steps):
     _i0 = GRADE_ORDER.index(g_res[0])
@@ -966,7 +976,10 @@ with cols[5]:
     if stock_info:
         _old = stock_info.get("최초입고")
         if _old is None:
-            _old_txt = "<span style='color:#999'>잔여재고 없음</span>"
+            # 다 팔린 상품은 파는 데 걸린 기간으로 강등된다
+            _old_txt = ("<span style='color:#999'>잔여재고 없음</span>"
+                        + (f" <span style='color:#cf222e'>⬇ {강등사유} → -{demote_steps}등급"
+                           f"</span>" if demote_steps else ""))
         else:
             _old_col = "#cf222e" if _old >= 300 else ("#bf8700" if _old >= 180 else "#666")
             _old_txt = (f"<span style='color:{_old_col};font-weight:700'>{int(_old):,}일</span> 경과"
@@ -1161,15 +1174,16 @@ st.subheader("🏅 전체 상품 등급")
 
 
 @st.cache_data(show_spinner=False)
-def 라인별_재고나이(stock_sig) -> pd.Series:
-    """라인명별 '가장 오래된 잔여재고'의 입고 경과일.
+def 라인별_재고나이(stock_sig) -> pd.DataFrame:
+    """라인명별 재고 나이 정보 (재고나이 · 최고입고 · 재고수량).
 
     검색 화면의 stock_info['최초입고'] 와 같은 FIFO 계산을 전 품목에 대해 미리 해 둔다.
     (입고경과일 컬럼은 '가장 최근 입고'라 값이 달라 등급이 어긋났다)
     """
     s = load_stock(stock_sig)
+    빈표 = pd.DataFrame(columns=["재고나이", "최고입고", "재고수량"], dtype="float64")
     if s is None or not {"라인명", "수량", "입고이력"} <= set(s.columns):
-        return pd.Series(dtype="float64")
+        return 빈표
 
     # 같은 이름의 컬럼이 두 개면 s["입고이력"] 이 DataFrame 으로 나온다.
     # (재고 원본에 '입고이력' 이 I열·S열 두 군데 있다) → 첫 번째만 쓴다.
@@ -1182,12 +1196,13 @@ def 라인별_재고나이(stock_sig) -> pd.Series:
     수량들 = pd.to_numeric(_한줄("수량"), errors="coerce").fillna(0).astype(int)
     이력들 = _한줄("입고이력")
 
-    결과 = {}
+    결과, 최고입고, 재고합 = {}, {}, {}
     for 라인, 수량, 이력 in zip(라인들, 수량들, 이력들):
-        if 수량 <= 0:
-            continue
         events = [(int(d), int(q)) for d, q in rx.findall(str(이력).replace(",", ""))]
-        if not events:
+        재고합[라인] = 재고합.get(라인, 0) + max(수량, 0)
+        if events:                       # 가장 오래된 입고 (완판일수 계산용)
+            최고입고[라인] = max(최고입고.get(라인, 0), max(d for d, _ in events))
+        if 수량 <= 0 or not events:
             continue
         remain, 마지막 = 수량, None
         for d_, q_ in sorted(events):          # 최신(경과일 작은 것) → 과거
@@ -1197,7 +1212,12 @@ def 라인별_재고나이(stock_sig) -> pd.Series:
                 break
         if 마지막 is not None:
             결과[라인] = max(결과.get(라인, 0), 마지막)
-    return pd.Series(결과, dtype="float64")
+
+    return pd.DataFrame({
+        "재고나이": pd.Series(결과, dtype="float64"),        # 남은 재고 중 가장 오래된 것
+        "최고입고": pd.Series(최고입고, dtype="float64"),     # 가장 오래된 입고 (재고 유무 무관)
+        "재고수량": pd.Series(재고합, dtype="float64"),
+    })
 
 
 @st.cache_data(show_spinner="전체 등급 계산 중...")
@@ -1292,15 +1312,33 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     온라인건수 = d[d["_온"] == 1].groupby("라인명", observed=True).size()
     표["온라인건수"] = 표["라인명"].map(온라인건수).fillna(0).astype(int)
     # 검색 화면과 같은 FIFO 기준 (가장 오래된 잔여재고의 경과일)
-    재고나이 = 라인별_재고나이(stock_sig)
+    재고정보 = 라인별_재고나이(stock_sig)
+    재고나이 = 재고정보["재고나이"] if len(재고정보) else pd.Series(dtype="float64")
     표["재고일수"] = 표["라인명"].map(재고나이) if len(재고나이) else pd.NA
+
+    # 다 팔린 라인은 '입고 → 마지막 판매' 기간으로 강등한다.
+    # 재고 기준일에서 가장 오래된 입고까지 거슬러 올라간 날짜가 최초 입고일.
+    표["완판일수"] = pd.NA
+    if len(재고정보):
+        기준 = 끝
+        try:
+            기준 = pd.Timestamp(load_stock(stock_sig)["기준일"].iloc[0])
+        except Exception:
+            pass
+        최초입고일 = 기준 - pd.to_timedelta(표["라인명"].map(재고정보["최고입고"]), unit="D")
+        마지막판매일 = 표["라인명"].map(d.groupby("라인명", observed=True)[COL_DATE].max())
+        재고없음 = 표["라인명"].map(재고정보["재고수량"]).fillna(0) <= 0
+        표.loc[재고없음, "완판일수"] = (마지막판매일 - 최초입고일).dt.days[재고없음]
     _나이 = pd.to_numeric(표["재고일수"], errors="coerce")
     안팔림 = (표["온라인건수"] == 0) & (_나이 >= NOSALE_DAYS)
     표.loc[안팔림, "등급"] = _나이[안팔림].map(안팔린재고등급)
 
     # 남은 재고가 DEMOTE_DAYS 마다 한 등급 강등 (검색 화면과 같은 규칙).
     # 안팔린재고는 위 사다리에 재고 나이가 이미 반영돼 있으므로 제외한다.
-    _강등 = (pd.to_numeric(표["재고일수"], errors="coerce") // DEMOTE_DAYS).fillna(0).astype(int)
+    _재고강등 = (pd.to_numeric(표["재고일수"], errors="coerce") // DEMOTE_DAYS)
+    _완판강등 = (pd.to_numeric(표["완판일수"], errors="coerce") // SELLOUT_DEMOTE_DAYS)
+    # 재고가 남아 있으면 재고 나이로, 다 팔렸으면 파는 데 걸린 기간으로
+    _강등 = _재고강등.fillna(_완판강등).fillna(0).astype(int)
     _강등 = _강등.where(~안팔림, 0).clip(lower=0)
     if (_강등 > 0).any():
         자리 = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)})
