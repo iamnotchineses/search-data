@@ -566,7 +566,8 @@ st.markdown(
     "· <b>판매 이력이 없는 재고는 묵은 기간으로 등급</b> — "
     "100일 B · 200일 C · 300일 D · 400일 E · 500일~ F "
     "<span style='color:#888'>(한 번이라도 팔렸으면 그 실적으로 산출)</span><br>"
-    "· <b>최근 1년 매출 5,000만원 이상이면 한 등급 상향</b><br>"
+    "· <b>최근 1년 매출 5,000만원마다 한 등급씩 상향</b> "
+    "<span style='color:#888'>(1억 +2 · 1.5억 +3)</span><br>"
     "· 남은 재고 중 가장 오래된 것이 200일 지날 때마다 한 등급씩 강등<br>"
     "· 다 팔린 상품은 <b>입고 → 마지막 판매</b>가 1년 지날 때마다 한 등급씩 강등"
     "</div>", unsafe_allow_html=True)
@@ -640,7 +641,8 @@ def _S조건(이익율, 수량, 매출) -> bool:
     return (매출 >= GRADE_S_SALES
             or (수량 >= GRADE_S_QTY and 매출 >= GRADE_S_QTY_MIN_SALES))
 
-# 최근 1년 매출이 이 금액을 넘으면 한 등급 올려준다.
+# 최근 1년 매출이 이 금액을 넘길 때마다 한 등급씩 올려준다.
+# (5천만 → +1, 1억 → +2, 1.5억 → +3 ...)
 # 이익율이 조금 낮아도 회사에 큰 돈을 벌어다 주는 라인을 챙기기 위한 보정.
 PROMO_SALES = 50_000_000
 PROMO_MONTHS = 12
@@ -832,7 +834,7 @@ GRADE_COLORS = {"S": "#7c3aed", "A": "#1a7f37", "B": "#0969da",
 # 승급 판단은 실제 매출 규모를 보는 것이므로 매장(오프라인)도 포함한다
 _최근1년매출 = float(
     hit.loc[hit[COL_DATE] >= _g_today - pd.DateOffset(months=PROMO_MONTHS), COL_PRICE].sum())
-promote_steps = 1 if _최근1년매출 >= PROMO_SALES else 0
+promote_steps = int(_최근1년매출 // PROMO_SALES)     # 5천만마다 한 등급
 
 # 판매 이력이 하나도 없는 재고는 묵은 기간만으로 등급을 매긴다 (100일마다 한 칸).
 # 팔린 적이 있으면 오래됐어도 그 실적으로 정상 산출한다.
@@ -1352,10 +1354,11 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     목표칸 = PROMO_MONTHS // GRADE_STEP_MONTHS - 1
     쓸칸 = max([i for i, c in enumerate(칸목록) if c <= 목표칸], default=len(칸목록) - 1)
     표["최근1년매출"] = 누적["매출"].values[행, 쓸칸]
-    올림 = 표["최근1년매출"] >= PROMO_SALES
+    올림단계 = (pd.to_numeric(표["최근1년매출"], errors="coerce") // PROMO_SALES).fillna(0).astype(int)
     자리 = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)})
-    표.loc[올림 & 자리.notna(), "등급"] = (
-        (자리[올림 & 자리.notna()] - 1).clip(lower=0).map(lambda i: GRADE_ORDER[int(i)]))
+    바꿀것 = (올림단계 > 0) & 자리.notna()
+    표.loc[바꿀것, "등급"] = ((자리 - 올림단계)[바꿀것].clip(lower=0)
+                          .map(lambda i: GRADE_ORDER[int(i)]))
 
     표["이익율(%)"] = 표["이익율(%)"].round(2)
     표["브랜드"] = (표["라인명"].map(브랜드표) if 브랜드표 is not None else "")
