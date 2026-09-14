@@ -954,14 +954,18 @@ with cols[5]:
         st.markdown(
             f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
-            + (f" <span style='font-size:0.8rem;color:#666'>이익율 {g_rate:.2f}%"
+            # 등급을 정한 값이므로 EC기준 수익율보다 눈에 띄게 크고 진하게 쓴다
+            + (f" <span style='font-size:1.35rem;font-weight:800;color:#111'>"
+               f"이익율 {g_rate:.2f}%</span>"
+               f"<span style='font-size:0.8rem;color:#666'>"
                if g_rate is not None
                else " <span style='font-size:0.8rem;color:#999'>온라인 판매 없어 이익율 산출 불가")
             + (f" <span style='color:#999'>({g_n:,}건)</span>"
                if g_rate is not None and g_n <= GRADE_TARGET else "")
             # 재고 파일 L열의 EC행사 수익률. 실제 판매 실적이 아니라
             # 행사가 기준으로 계산된 값이라 이익율과 나란히 두고 비교한다.
-            + (f"<br>EC기준 수익율 <b style='color:#333'>{_ec율 * 100:.1f}%</b>"
+            + (f"<br><span style='font-size:0.78rem;color:#999'>"
+               f"EC기준 수익율 {_ec율 * 100:.1f}%</span>"
                if _ec율 is not None else "")
             + (f"<br><span style='color:#d4691e'>💤 판매 이력 없이 재고만 "
                f"{int(_재고나이):,}일 → {g_res[0]}</span>" if 안팔린재고 else "")
@@ -1420,8 +1424,8 @@ st.divider()
 st.subheader("🖼 이미지 없는 라인명")
 
 
-# 사은품·쇼핑백·PR(홍보용)·리퍼·노다는 원래 상품 이미지가 없는 것이 정상이라 목록에서 뺀다
-IMG_SKIP_BRANDS = {"사은품", "쇼핑백", "PR", "리퍼", "노다"}
+# 사은품·쇼핑백·PR(홍보용)·리퍼는 원래 상품 이미지가 없는 것이 정상이라 목록에서 뺀다
+IMG_SKIP_BRANDS = {"사은품", "쇼핑백", "PR", "리퍼"}
 
 @st.cache_data(show_spinner=False)
 def 이미지없는_라인명(stock_sig, image_sig) -> pd.DataFrame:
