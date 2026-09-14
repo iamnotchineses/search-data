@@ -955,7 +955,7 @@ with cols[5]:
             f"<div style='line-height:1.05;margin-bottom:0.4rem'>"
             f"<span style='font-size:2.6rem;font-weight:900;color:{g_res[1]}'>{g_res[0]}</span>"
             # 등급을 정한 값이므로 EC기준 수익율보다 눈에 띄게 크고 진하게 쓴다
-            + (f" <span style='font-size:1.35rem;font-weight:800;color:#111'>"
+            + (f" <span style='font-size:1.18rem;font-weight:800;color:#111'>"
                f"이익율 {g_rate:.2f}%</span>"
                f"<span style='font-size:0.8rem;color:#666'>"
                if g_rate is not None
