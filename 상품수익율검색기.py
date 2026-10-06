@@ -419,6 +419,13 @@ def load_all_data(file_sigs: tuple, mall_sig=None) -> pd.DataFrame:
 # ──────────────────────────────────────────────
 # 포맷 헬퍼
 # ──────────────────────────────────────────────
+def 최근3개년(data):
+    # 파일 갱신이 늦어도 등급의 기준일(마지막 출고일)과 표시 연도를 맞춘다.
+    끝 = data[COL_DATE].max()
+    연도 = 끝.year if pd.notna(끝) else pd.Timestamp.now(tz="Asia/Seoul").year
+    return list(range(연도 - 2, 연도 + 1))
+
+
 def fmt_won(v):
     return "-" if v is None or pd.isna(v) else f"{v:,.0f}원"
 
@@ -699,7 +706,8 @@ GRADE_MAX_MONTHS = 24     # 최대 기간(개월)
 
 TURN_MONTHS = 6      # 회전율 기준 기간(개월). 묵은 재고가 있으면 그만큼 늘어남
 
-_g_pool = (hit[hit["연도"].isin([2024, 2025, 2026])]
+years = 최근3개년(df)
+_g_pool = (hit[hit["연도"].isin(years)]
            .sort_values(COL_DATE, ascending=False))
 # '지금'은 실행 시각이 아니라 데이터의 마지막 출고일로 본다
 # (파일 갱신이 하루이틀 늦어도 기준이 흔들리지 않게)
@@ -759,7 +767,7 @@ if stock_df is not None:
                           _RX_IN.findall(str(r["입고이력"]).replace(",", ""))]
                 for d_, q_ in events:
                     yr_in = (base - pd.Timedelta(days=d_)).year
-                    yr_in = max(yr_in, 2024)   # 24년 이전 입고 → 24년 귀속
+                    yr_in = max(yr_in, years[0])   # 표시 범위 이전 입고는 첫 연도에 합산
                     inbound_by_year[yr_in] = inbound_by_year.get(yr_in, 0) + q_
                 # FIFO: 이 모델의 잔여재고가 어느 입고 회차부터 남았는지
                 remain = int(r["수량"])
@@ -824,6 +832,18 @@ if stock_df is not None:
             if first_in is not None and pd.notna(last_sale):
                 stock_info["완판일수"] = max((pd.Timestamp(last_sale) - first_in).days, 0)
 
+# 현재 재고 목록에서 빠진 완판 상품도 판매기록으로 수량 정보를 남긴다.
+# 입고이력은 없으므로 입고량은 판매량 기준 추정, 입고일·완판기간은 계산하지 않는다.
+if stock_df is not None and stock_info is None and hit[COL_QTY].sum() > 0:
+    _sold = int(hit[COL_QTY].sum())
+    stock_info = {
+        "현재고": 0, "총입고량": _sold, "판매량": _sold,
+        "입고추정": True, "입고이력없음": True,
+        "최초입고": None, "최근입고": None, "완판일수": None,
+        "회전율": 1.0, "회전기간전체": True,
+        "기간판매": _sold, "기간입고": _sold,
+    }
+
 # 등급 보정 두 가지를 합쳐서 한 번에 적용한다.
 #   · 최근 1년 매출이 1억 이상이면      한 등급 올림
 #   · 남은 재고가 200일 지날 때마다     한 등급씩 내림 (400일=2등급 ...)
@@ -872,7 +892,7 @@ st.markdown(f"**검색 결과 {len(hit):,}건** · 모델 {len(matched):,}종 ·
 def agg_stats(sub: pd.DataFrame) -> dict:
     if sub.empty:
         return {"수량": 0, "수익율": None, "평균정산금": None, "이익율": None,
-                "매장수량": 0, "매출": 0.0}
+                "매장수량": 0, "매출": 0.0, "수익금액": 0.0}
     qty = sub[COL_QTY].sum()
     settle = sub["정산금"].sum()          # 배송비 차감 안 한 금액 (표시용)
 
@@ -884,8 +904,9 @@ def agg_stats(sub: pd.DataFrame) -> dict:
 
     return {"수량": int(qty),
             "매장수량": int(sub.loc[sub["매장"], COL_QTY].sum()) if "매장" in sub.columns else 0,
-            # 매출은 매장 포함 (실제로 판 금액)
+            # 매출과 수익금액은 같은 판매 범위로 비교하므로 매장까지 포함한다.
             "매출": float(sub[COL_PRICE].sum()),
+            "수익금액": float(sub[COL_PROFIT].sum()),
             # 수익율 = 수익 ÷ 판매가   (고객이 낸 돈 대비)
             "수익율": (profit_on / sales_on * 100) if sales_on else None,
             # 이익율 = 수익 ÷ 정산금(배송비 차감)  — 상품등급과 같은 산식
@@ -894,11 +915,10 @@ def agg_stats(sub: pd.DataFrame) -> dict:
             "평균정산금": (settle / qty) if qty else None}
 
 
-years = [2024, 2025, 2026]
 periods = [("최근 3개년", hit[hit["연도"].isin(years)])]
 periods += [(f"{y}년", hit[hit["연도"] == y]) for y in years]
 
-# 26년 칸과 상품등급 칸 사이에 상품 이미지
+# 최신 연도 칸과 상품등급 칸 사이에 상품 이미지
 # 검색된 모델명 → (사이즈 뗀 이름) → 재고에서 찾은 라인명 순으로 이미지를 찾는다
 img_map = load_images(get_image_sig())
 _img_후보 = list(matched) + list(stock_info.get("라인명들", []) if stock_info else [])
@@ -913,12 +933,13 @@ for col, (label, sub) in zip(cols, periods):
             inb = sum(inbound_by_year.get(y, 0) for y in years)
         else:
             inb = inbound_by_year.get(int(label[:4]), 0)
-        inb_txt = f"{inb:,}" if stock_info else "-"
-        inb_label = "입고(~24년)" if label == "2024년" else "입고"
+        inb_txt = (f"{inb:,}" if stock_info and not stock_info.get("입고이력없음") else "-")
+        inb_label = f"입고(~{years[0] % 100:02d}년)" if label == f"{years[0]}년" else "입고"
         if s["수량"]:
             st.markdown(f"**{label}**")
             st.caption(f"{inb_label} {inb_txt}개 / 판매 {s['수량']:,}개")
-            st.metric("매출", fmt_won_short(s["매출"]))
+            _한줄지표("매출", fmt_won_short(s["매출"]),
+                   "수익금액", fmt_won_short(s["수익금액"]))
             st.metric("평균 수익율", fmt_pct(s["수익율"]))
             # 정산금·이익율은 st.metric 두 개를 나란히 놓으면 칸을 넘쳐 글자가 겹친다.
             # → 한 줄에 작게 (이익율은 상품등급과 같은 산식: 수익 ÷ 정산금)
@@ -927,7 +948,7 @@ for col, (label, sub) in zip(cols, periods):
         else:
             st.markdown(f"**{label}**")
             st.caption(f"{inb_label} {inb_txt}개 / 판매 0개")
-            st.metric("매출", "-")
+            _한줄지표("매출", "-", "수익금액", "-")
             st.metric("평균 수익율", "-")
             _한줄지표("평균 정산금", "-", "이익율", "-")
 
@@ -998,7 +1019,8 @@ with cols[5]:
     if stock_info:
         _t = stock_info["회전율"]
         _r = stock_info["최근입고"]
-        _turn_label = (f"최근 {TURN_MONTHS}개월"
+        _turn_label = ("보유 매출 전체 · 재고 목록 기준" if stock_info.get("회전기간전체") else
+                      f"최근 {TURN_MONTHS}개월"
                        if not stock_info.get("회전기간연장")
                        else f"최근 {stock_info['회전기간일'] / 30:.0f}개월 · 묵은재고 입고시점까지")
         st.markdown(
@@ -1006,8 +1028,10 @@ with cols[5]:
             f"총입고 <b>{stock_info['총입고량']:,}개</b>"
             + ("<span style='color:#999'>*</span>" if stock_info.get("입고추정") else "")
             + "<br>"
-            f"판매 <b>{stock_info['판매량']:,}개</b><br>"
+            f"총판매 <b>{stock_info['판매량']:,}개</b><br>"
             f"현재고 <b>{stock_info['현재고']:,}개</b><br>"
+            + ("✅ 완판 (현재 재고 목록 기준)<br>" if stock_info.get("입고이력없음")
+               else "✅ 완판<br>" if stock_info["현재고"] == 0 and stock_info["판매량"] > 0 else "")
             + (f"회전율(판매÷입고) <b>{_t:.1%}</b>" if _t is not None and pd.notna(_t)
                else "회전율(판매÷입고) <b>-</b>")
             + f" <span style='color:#999;font-size:0.75rem'>({_turn_label})</span><br>"
@@ -1016,7 +1040,9 @@ with cols[5]:
             + (f"최근입고 <b>{int(_r)}일 전</b>" if pd.notna(_r) else "최근입고 <b>-</b>")
             + (f"<br>✅ 완판까지 <b>{stock_info['완판일수']:,}일</b>"
                if stock_info.get("완판일수") is not None else "")
-            + ("<br><span style='color:#999;font-size:0.75rem'>* 입고이력 누락분 보정(판매+재고)</span>"
+            + ("<br><span style='color:#999;font-size:0.75rem'>* 입고이력 없음 · 판매량 기준 추정</span>"
+               if stock_info.get("입고이력없음") else
+               "<br><span style='color:#999;font-size:0.75rem'>* 입고이력 누락분 보정(판매+재고)</span>"
                if stock_info.get("입고추정") else "")
             + "</div>", unsafe_allow_html=True)
     else:
@@ -1235,7 +1261,7 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
       구간별 합계를 누적해서 모든 라인명의 기간을 한 번에 정한다.
     """
     d = load_all_data(file_sigs, mall_sig)
-    d = d[d["연도"].isin([2024, 2025, 2026])]
+    d = d[d["연도"].isin(최근3개년(d))]
     d = d[d[COL_QTY] > 0]                            # 수량 0 건 제외
     if COL_BRAND in d.columns:                       # 리퍼는 등급 대상이 아니다
         d = d[d[COL_BRAND].astype(str).str.strip() != "리퍼"]
