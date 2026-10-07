@@ -153,4 +153,36 @@ for 날짜들, 수량들, 매출들, 수익들, 정산들, 예상기간, 예상�
     assert 표["수량"] == 환경["_g_base"]["수량"].sum()
     assert 표["매출"] == 환경["_g_base"]["최종판매가"].sum()
     assert np.isclose(표["이익율(%)"], round(환경["g_rate"], 2), atol=0.001)
-print("PASS: 연도 전환, 완판·수익금액 표시, 검색·엑셀 등급 기간 일치")
+
+# 완판도 남기고 현재고·추정 재고액을 추가한다. 원가는 수량으로 가중 평균한다.
+엑셀재고 = pd.DataFrame({
+    "라인명": ["SOLD", "MIX", "MIX", "MIX", "NOHIST"],
+    "모델명": ["SOLD (M)", "MIX (M)", "MIX (L)", "MIX (XL)", "NOHIST"],
+    "수량": [0, 0, 4, 3, 2], "입고이력": [""] * 4 + ["150일전/2"],
+    "브랜드": ["TEST"] * 5,
+})
+엑셀매출 = pd.DataFrame({
+    "모델명": ["SOLD (M)", "MIX (M)", "MIX (L)", "MIX (L)", "MIX (L)", "MISSING", "CLOCK"],
+    "출고날짜": pd.to_datetime(["2026-10-07"] * 7), "연도": [2026] * 7,
+    "브랜드": ["TEST"] * 7, "매장": [False] * 7,
+    "수량": [50, 1, 2, 1, 1, 10, 1], "출고원가": [10000, 100, 600, 900, 0, 1000, 100],
+    "최종판매가": [20000, 200, 1000, 1200, 100, 2000, 200],
+    "수익원(실배송비)": [5000, 100, 400, 300, 100, 1000, 100],
+    "정산금_수익": [15000, 200, 1000, 1200, 100, 2000, 200],
+    "정산금": [15000, 200, 1000, 1200, 100, 2000, 200],
+})
+환경.update(load_stock=lambda sig: 엑셀재고, load_all_data=lambda *args: 엑셀매출.copy())
+엑셀원본 = 환경["전체등급표"]((), None, None)
+재고표 = 엑셀원본.set_index("라인명")
+assert 재고표.loc["SOLD", "재고"] == 0 and 재고표.loc["SOLD", "재고액"] == 0
+assert 재고표.loc["MISSING", "재고"] == 0 and 재고표.loc["MISSING", "재고액"] == 0
+assert 재고표.loc["MIX", "재고"] == 7 and 재고표.loc["MIX", "재고액"] == 3200
+assert 재고표.loc["NOHIST", "재고"] == 2 and pd.isna(재고표.loc["NOHIST", "재고액"])
+import io
+엑셀 = pd.read_excel(io.BytesIO(환경["_엑셀바이트"](엑셀원본, "상품등급"))).set_index("라인명")
+assert set(엑셀.index) == set(재고표.index) and 엑셀.loc["MIX", "재고액"] == 3200
+assert pd.isna(엑셀.loc["NOHIST", "재고액"])
+환경["load_stock"] = lambda sig: None
+미확인표 = 환경["전체등급표"]((), None, None)
+assert 미확인표["재고"].isna().all() and 미확인표["재고액"].isna().all()
+print("PASS: 연도·등급·완판 표시 유지, 엑셀 재고·재고액·미확인 원가")

@@ -1419,6 +1419,28 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
             })
             표 = pd.concat([표, 추가], ignore_index=True)
 
+    표["재고"] = (표["라인명"].map(재고정보["재고수량"]).fillna(0).astype(int)
+                  if s is not None else pd.NA)
+    표["재고액"] = np.nan
+    if s is not None:
+        # 재고 파일에는 원가가 없어 브랜드매출과 같이 판매의 개당원가로 추정한다.
+        원가 = d[(d[COL_QTY] > 0) & (d[COL_COST] > 0)]
+        모델키 = 원가[COL_MODEL].astype(str).str.strip().str.upper()
+        모델합 = 원가.groupby(모델키, observed=True)[[COL_COST, COL_QTY]].sum()
+        라인합 = 원가.groupby("라인명", observed=True)[[COL_COST, COL_QTY]].sum()
+        모델단가 = 모델합[COL_COST] / 모델합[COL_QTY]
+        라인단가 = 라인합[COL_COST] / 라인합[COL_QTY]
+        재고금액 = s[["모델명", "라인명", "수량"]].copy()
+        재고금액["라인명"] = 재고금액["라인명"].astype(str).str.strip()
+        재고금액["수량"] = pd.to_numeric(재고금액["수량"], errors="coerce").fillna(0).clip(lower=0)
+        단가 = (재고금액["모델명"].astype(str).str.strip().str.upper().map(모델단가)
+                .fillna(재고금액["라인명"].map(라인단가)))
+        재고금액["재고액"] = 재고금액["수량"] * 단가
+        금액합 = 재고금액.groupby("라인명", observed=True)["재고액"].sum(min_count=1)
+        미확인 = 재고금액.loc[(재고금액["수량"] > 0) & 단가.isna(), "라인명"]
+        금액합.loc[금액합.index.isin(미확인)] = np.nan
+        표["재고액"] = 표["라인명"].map(금액합).where(표["재고"] > 0, 0).round(0)
+
     표["_ord"] = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)}).fillna(99)
     return (표.sort_values(["_ord", "수량"], ascending=[True, False])
             .drop(columns=["_ord"]).reset_index(drop=True))
@@ -1434,6 +1456,8 @@ else:
                + " · ".join(f"{g} {int(_분포.get(g, 0)):,}" for g in GRADE_ORDER
                             if _분포.get(g, 0))
                + " · 매장(오프라인) 제외, 상단 규칙과 같은 방식")
+    st.caption("재고액은 현재고 × 평균 개당 출고원가의 추정치입니다. "
+               "모델명 기준, 없으면 같은 라인명 기준 · 원가 미확인은 빈칸")
     st.download_button(
         f"⬇ 전체 상품 등급 {len(_등급표전체):,}개 내려받기 (엑셀)",
         data=_엑셀바이트(_등급표전체, "상품등급"),
