@@ -559,7 +559,7 @@ st.markdown(
     "background:#f6f8fa;border:1px solid #e6e8eb;border-radius:6px;"
     "padding:0.5rem 0.75rem;margin-bottom:0.5rem'>"
     "<b>상품등급 산정 규칙</b> — 이익율(수익 ÷ 정산금) 기준<br>"
-    "<span style='color:#7c3aed;font-weight:700'>S</span> 40% 이상 <b>이면서</b> 판매 20개 이상 · "
+    "<span style='color:#7c3aed;font-weight:700'>S</span> 40% 이상 + 아래 매출·수량 조건 충족 · "
     "<span style='color:#1a7f37;font-weight:700'>A</span> 25% 이상 · "
     "<span style='color:#0969da;font-weight:700'>B</span> 15% 이상 · "
     "<span style='color:#bf8700;font-weight:700'>C</span> 5% 이상 · "
@@ -568,7 +568,8 @@ st.markdown(
     "<span style='color:#7d1a1a;font-weight:700'>F</span> −25% 미만<br>"
     "· S 는 이익율 40% 이상이면서 "
     "매출 1,500만원 이상 <b>또는</b> (판매 30개 이상 + 매출 1,000만원 이상)<br>"
-    "· 기간은 최근 3개월부터, 100건을 넘길 때까지 3개월씩 넓힘 (최대 24개월)<br>"
+    "· 기간은 최근 3개월부터, 온라인 100건을 넘길 때까지 3개월씩 넓힘 (최대 24개월)<br>"
+    "· 24개월로도 100건 이하이면 전체 판매실적(최근 3개년)으로 산정<br>"
     "· 매장(오프라인) 판매는 등급·수익율에서 제외 (판매수량·판매금액에는 포함)<br>"
     "· <b>판매 이력이 없는 재고는 묵은 기간으로 등급</b> — "
     "100일 B · 200일 C · 300일 D · 400일 E · 500일~ F "
@@ -697,7 +698,7 @@ def grade_of(sub: pd.DataFrame):
 # 최근 3개월부터 보되, 표본이 얇으면 3개월씩 뒤로 늘려간다.
 #   3개월 → 100건 넘으면 확정
 #   안 되면 6, 9, 12 ... 최대 24개월까지
-#   24개월로도 100건이 안 되면 그 24개월치를 그대로 쓴다
+#   24개월로도 100건 이하이면 최근 3개년의 전체 판매실적으로 표본을 확보한다
 # 잘 팔리는 상품은 최근 실적만, 드물게 팔리는 상품은 기간을 넓혀
 # 최소한의 표본을 확보하는 방식.
 GRADE_TARGET = 100        # 이 건수를 넘기면 기간 확장을 멈춘다
@@ -723,8 +724,8 @@ for _개월 in range(GRADE_STEP_MONTHS, GRADE_MAX_MONTHS + 1, GRADE_STEP_MONTHS)
     if len(온라인만(_g_base)) > GRADE_TARGET:
         break
 
-# 2년간 판매가 아예 없으면 그 기간으로는 등급을 못 매긴다 → 있는 것 전부로
-if _g_base.empty:
+# 최근 실적만으로 표본이 부족하면 엑셀과 같이 전체 판매실적으로 넓힌다.
+if len(온라인만(_g_base)) <= GRADE_TARGET:
     _g_base, g_basis = _g_pool, f"전체 {len(_g_pool):,}건"
 
 g_res, g_rate = grade_of(_g_base)
@@ -1155,9 +1156,9 @@ def 등급범위(pool: pd.DataFrame) -> pd.DataFrame:
     base = pool
     for 개월 in range(GRADE_STEP_MONTHS, GRADE_MAX_MONTHS + 1, GRADE_STEP_MONTHS):
         base = pool[pool[COL_DATE] >= _g_today - pd.DateOffset(months=개월)]
-        if len(base) > GRADE_TARGET:
+        if len(온라인만(base)) > GRADE_TARGET:
             break
-    return pool if base.empty else base
+    return pool if len(온라인만(base)) <= GRADE_TARGET else base
 
 
 f1, f2, f3 = st.columns([2, 2, 1])
@@ -1261,6 +1262,7 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
       구간별 합계를 누적해서 모든 라인명의 기간을 한 번에 정한다.
     """
     d = load_all_data(file_sigs, mall_sig)
+    끝 = d[COL_DATE].max()                          # 검색 화면과 같은 기준일
     d = d[d["연도"].isin(최근3개년(d))]
     d = d[d[COL_QTY] > 0]                            # 수량 0 건 제외
     if COL_BRAND in d.columns:                       # 리퍼는 등급 대상이 아니다
@@ -1280,7 +1282,6 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
     d = d.assign(라인명=라인)
 
     # 기간 구간: 최근 3,6,...,24개월. 그 밖은 마지막 칸.
-    끝 = d[COL_DATE].max()
     경계 = [끝 - pd.DateOffset(months=k)
           for k in range(GRADE_STEP_MONTHS, GRADE_MAX_MONTHS + 1, GRADE_STEP_MONTHS)]
     구간 = np.searchsorted(np.array(경계[::-1], dtype="datetime64[ns]"),
@@ -1304,13 +1305,15 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
                수익=("_수익온", "sum"), 정산=("_정산온", "sum"),
                정산표시=("정산금", "sum")))     # 화면의 '평균 정산금' 과 같은 기준(매장 포함)
     # 구간별 누적합. (groupby(axis=1) 은 pandas 최신판에서 없어져 항목별로 따로 돌린다)
-    누적 = {이름: 합[이름].unstack("구간", fill_value=0).sort_index(axis=1).cumsum(axis=1)
+    # 판매 없는 구간도 남겨야 열 위치가 실제 개월 수와 일치한다.
+    누적 = {이름: 합[이름].unstack("구간", fill_value=0)
+                 .reindex(columns=range(len(경계) + 1), fill_value=0).cumsum(axis=1)
           for 이름 in ("건수", "수량", "매출", "수익", "정산", "정산표시")}
 
     건수 = 누적["건수"]
-    # 100건을 넘기는 첫 구간. 끝까지 못 넘기면 마지막 구간(=24개월, 없으면 전체)
-    넘김 = 건수.gt(GRADE_TARGET)
-    고른칸 = np.where(넘김.any(axis=1), 넘김.values.argmax(axis=1), 건수.shape[1] - 1)
+    # 24개월로도 온라인 100건을 넘기지 못하면 전체로 넓힌다.
+    넘김 = 건수.iloc[:, :len(경계)].gt(GRADE_TARGET)
+    고른칸 = np.where(넘김.any(axis=1), 넘김.values.argmax(axis=1), len(경계))
     행 = np.arange(len(건수))
 
     표 = pd.DataFrame({
@@ -1378,12 +1381,8 @@ def 전체등급표(file_sigs, stock_sig, mall_sig) -> pd.DataFrame:
         바꿀것 = (_강등 > 0) & 자리.notna()
         표.loc[바꿀것, "등급"] = 갈곳[바꿀것].map(lambda i: GRADE_ORDER[int(i)])
 
-    # 최근 1년 매출 1억 이상이면 한 등급 올림.
-    # 구간 3 = 12개월 (0=3, 1=6, 2=9, 3=12개월). 그 칸의 누적 매출을 본다.
-    칸목록 = list(누적["매출"].columns)
-    목표칸 = PROMO_MONTHS // GRADE_STEP_MONTHS - 1
-    쓸칸 = max([i for i, c in enumerate(칸목록) if c <= 목표칸], default=len(칸목록) - 1)
-    표["최근1년매출"] = 누적["매출"].values[행, 쓸칸]
+    # 판매 없는 구간도 채워 뒀으므로 12개월 칸을 그대로 사용한다.
+    표["최근1년매출"] = 누적["매출"].iloc[:, PROMO_MONTHS // GRADE_STEP_MONTHS - 1].to_numpy()
     올림단계 = (pd.to_numeric(표["최근1년매출"], errors="coerce") // PROMO_SALES).fillna(0).astype(int)
     자리 = 표["등급"].map({g: i for i, g in enumerate(GRADE_ORDER)})
     바꿀것 = (올림단계 > 0) & 자리.notna()
