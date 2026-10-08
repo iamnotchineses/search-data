@@ -185,4 +185,21 @@ assert pd.isna(엑셀.loc["NOHIST", "재고액"])
 환경["load_stock"] = lambda sig: None
 미확인표 = 환경["전체등급표"]((), None, None)
 assert 미확인표["재고"].isna().all() and 미확인표["재고액"].isna().all()
-print("PASS: 연도·등급·완판 표시 유지, 엑셀 재고·재고액·미확인 원가")
+
+# 주문 상세와 CSV는 총 정산금을 수량으로 나눈 개당 금액을 표시한다.
+상세 = pd.DataFrame({
+    "출고날짜": pd.to_datetime(["2026-10-08"] * 3), "쇼핑몰": ["TEST"] * 3,
+    "브랜드": ["TEST"] * 3, "모델명": ["TEST"] * 3, "비고": [""] * 3,
+    "수량": [2, 3, 0], "출고원가": [500, 500, 500], "최종판매가": [1500] * 3,
+    "정산금": [1000, 1001, 500], "수익원(실배송비)": [500] * 3, "수익율": [33.3] * 3,
+})
+환경["detail"] = 상세
+상세시작 = 트리.body.index(대입("show"))
+실행(트리.body[상세시작:상세시작 + 3])
+상세표 = 환경["show"]
+assert "정산금" not in 상세표 and list(상세표["평균정산금"].iloc[:2]) == [500, 334]
+assert pd.isna(상세표["평균정산금"].iloc[2])
+csv표 = pd.read_csv(io.StringIO(상세표.to_csv(index=False)))
+assert list(csv표["평균정산금"].iloc[:2]) == [500, 334] and pd.isna(csv표["평균정산금"].iloc[2])
+assert list(상세["정산금"]) == [1000, 1001, 500]
+print("PASS: 기존 등급·재고 검사, 주문 상세·CSV 평균정산금")

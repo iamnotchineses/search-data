@@ -1182,7 +1182,8 @@ detail = detail.sort_values(COL_DATE, ascending=False)
 show = detail[[COL_DATE, COL_MALL, COL_BRAND, COL_MODEL, COL_QTY, COL_COST,
                COL_PRICE, "정산금", COL_PROFIT, "수익율", COL_NOTE]].rename(
     columns={COL_COST: "원가", COL_PRICE: "최종판매가",
-             COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
+             "정산금": "평균정산금", COL_PROFIT: "수익(실배송비)", "수익율": "수익율(%)"})
+show["평균정산금"] = (show["평균정산금"] / show[COL_QTY].where(show[COL_QTY] > 0)).round(0)
 show[COL_DATE] = show[COL_DATE].dt.strftime("%Y-%m-%d")
 # 어느 모델이 무슨 등급인지 표에서도 바로 보이게
 
@@ -1190,7 +1191,7 @@ st.dataframe(
     show,
     hide_index=True,
     height=520,
-    column_config={"수량": NUM, "원가": WON, "최종판매가": WON, "정산금": WON,
+    column_config={"수량": NUM, "원가": WON, "최종판매가": WON, "평균정산금": WON,
                    "수익(실배송비)": WON,
                    "수익율(%)": st.column_config.NumberColumn(format="%.2f%%")},
 )
