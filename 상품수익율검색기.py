@@ -330,21 +330,47 @@ def load_all_data(file_sigs: tuple, mall_sig=None) -> pd.DataFrame:
     # 그냥 이어붙이면 같은 주문이 두 번 잡혀 매출이 부풀려진다.
     # → 최근에 갱신된 파일부터 읽고, 앞서 나온 주문번호+모델명은 버린다.
     #   (같은 파일 안의 중복은 정상 데이터일 수 있으므로 건드리지 않는다)
-    순서 = sorted(file_sigs, key=lambda x: x[1], reverse=True)
+    import json
+    import pyarrow.parquet as pq
+
+    원본목록 = []
+    for 경로, 수정시각 in file_sigs:
+        메타 = (pq.read_schema(경로).metadata or {}) if 경로.lower().endswith('.parquet') else {}
+        원본정보 = json.loads(메타.get(b'sales_archive_sources', b'[]'))
+        기간 = 메타.get(b'sales_archive_end', b'').decode()
+        if not 기간:
+            월 = re.search(r'(20\d{2})-(\d{2})월매출', os.path.basename(경로))
+            연 = re.search(r'(20\d{2})년매출', os.path.basename(경로))
+            기간 = f'{월[1]}-{월[2]}' if 월 else f'{연[1]}-12' if 연 else ''
+        원본목록.append((기간, 수정시각, 경로, 원본정보))
+    통합본있음 = any(x[3] for x in 원본목록)
+    # 새 통합본의 Git 저장 시각 때문에 당월 자료가 과거 값에 덮이지 않게 한다.
+    순서 = sorted(원본목록, key=lambda x: (x[0] if 통합본있음 else '', x[1]), reverse=True)
 
     frames, 본키 = [], np.empty(0, dtype=np.uint64)
     버린수 = 0
-    for 경로, _ in 순서:
-        조각 = _read_one(경로)
-        if COL_ORDER in 조각.columns and COL_MODEL in 조각.columns:
-            해시 = _키해시(조각)
-            겹침 = np.isin(해시, 본키)
-            if 겹침.any():
-                버린수 += int(겹침.sum())
-                조각 = 조각[~겹침]
-                해시 = 해시[~겹침]
-            본키 = np.union1d(본키, 해시)
-        frames.append(조각)
+    for _, 수정시각, 경로, 원본정보 in 순서:
+        자료 = _read_one(경로)
+        조각들, 시작 = [], 0
+        for 원본 in 원본정보:
+            행수 = 원본['rows']
+            if not isinstance(행수, int) or 행수 < 0:
+                raise ValueError(f'통합 매출의 원본 행수가 잘못되었습니다: {경로}')
+            조각들.append((원본['mtime'], 자료.iloc[시작:시작 + 행수]))
+            시작 += 행수
+        if 원본정보 and 시작 != len(자료):
+            raise ValueError(f'통합 매출의 원본 행수 합계가 맞지 않습니다: {경로}')
+        # 통합 전 파일 내부의 정상 중복과 파일 간 중복 처리를 그대로 유지한다.
+        for _, 조각 in sorted(조각들 or [(수정시각, 자료)], key=lambda x: x[0], reverse=True):
+            if COL_ORDER in 조각.columns and COL_MODEL in 조각.columns:
+                해시 = _키해시(조각)
+                겹침 = np.isin(해시, 본키)
+                if 겹침.any():
+                    버린수 += int(겹침.sum())
+                    조각 = 조각[~겹침]
+                    해시 = 해시[~겹침]
+                본키 = np.union1d(본키, 해시)
+            frames.append(조각)
 
     df = pd.concat(frames, ignore_index=True)
     del frames, 본키
